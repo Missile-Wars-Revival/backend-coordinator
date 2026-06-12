@@ -142,6 +142,7 @@ const PORTAL_HTML = /* html */ `<!doctype html>
   #msg.ok { color: #3fb950; }
   td .actions { display: flex; gap: .35rem; flex-wrap: wrap; }
   .modal-backdrop { position: fixed; inset: 0; display: grid; place-items: center; background: rgb(1 4 9 / .76); padding: 1rem; }
+  .modal-backdrop[hidden] { display: none !important; }
   .modal { width: min(560px, 100%); background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; box-shadow: 0 20px 48px rgb(1 4 9 / .45); }
   .modal h2 { margin: 0 0 .25rem; font-size: 1rem; }
   .modal .field { margin-top: .85rem; }

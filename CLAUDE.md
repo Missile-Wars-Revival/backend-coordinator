@@ -64,7 +64,8 @@ violate the coordinator/shard split.
 - `src/middleware.ts` - response shape, shard API-key auth, admin auth.
 - `src/social.ts` - profile bootstrap writes to Firebase central.
 - `src/routes/shards.ts` - open registration and shard heartbeat.
-- `src/routes/servers.ts` - public server discovery.
+- `src/routes/servers.ts` - public server discovery; with an optional Firebase
+  ID token, `GET /servers` also returns the caller's server history.
 - `src/routes/auth.ts` - shard token mint, Firebase ID token verify, refresh,
   client select-server flow.
 - `src/routes/relay.ts` - Expo push relay backed by Firebase central token and
@@ -106,6 +107,10 @@ Coordinator control-plane state is under these RTDB paths:
 - `/coordinator/shardKeyIndex`
 - `/coordinator/shardNameIndex`
 - `/coordinator/sessions`
+- `/coordinator/users/<userId>/serverHistory/<shardId>` - Phase 7 per-user
+  server history (`firstUsedAt`, `lastUsedAt`, `useCount` plus name/region/
+  verified snapshots), written on every token mint; `userId` is the
+  firebaseUID or `user:<username>` for legacy accounts
 
 Clients must not read or write `/coordinator/*` directly. Keep
 `rtdbrules.json` aligned with any new Firebase paths.
