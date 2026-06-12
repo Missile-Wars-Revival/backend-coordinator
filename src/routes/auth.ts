@@ -3,7 +3,12 @@ import { z } from "zod";
 import { signShardToken, verifyShardToken } from "../keys";
 import { getAuthedShard, sendError, shardAuth } from "../middleware";
 import { verifyFirebaseIdToken } from "../firebase";
-import { bootstrapProfile, getProfileUsername } from "../social";
+import {
+  bootstrapProfile,
+  getProfileUsername,
+  getUidByProfileUsername,
+  setProfileUsername,
+} from "../social";
 import { getStore, isShardListable, type ShardRecord } from "../store";
 
 // Phase 7: every successful mint records the shard in the user's server
@@ -26,6 +31,33 @@ async function recordServerUse(userId: string, shard: ShardRecord): Promise<void
 const SelectSchema = z.object({
   serverId: z.string().min(1),
 });
+
+// Same shape the shards have always enforced at /api/register. Lowercased for
+// uniqueness, so "Alice" and "alice" cannot both be claimed through here.
+const USERNAME_RE = /^[a-zA-Z0-9]{3,20}$/;
+
+const ClaimUsernameSchema = z.object({
+  username: z.string().regex(USERNAME_RE, "Username must be 3-20 letters and numbers."),
+});
+
+// A name is taken when the Phase 8 claim index has it (lowercased) or any
+// existing profile carries it (accounts that predate central claims).
+async function usernameOwnerUid(username: string): Promise<string | null> {
+  const claimed = await getStore().getUsernameClaim(username.toLowerCase());
+  if (claimed) return claimed;
+  return getUidByProfileUsername(username);
+}
+
+async function uidFromIdTokenHeader(req: Request): Promise<{ uid: string } | null> {
+  const header = req.headers.authorization;
+  if (typeof header !== "string" || !header.startsWith("Bearer ")) return null;
+  try {
+    const decoded = await verifyFirebaseIdToken(header.slice("Bearer ".length).trim());
+    return { uid: decoded.uid };
+  } catch {
+    return null;
+  }
+}
 
 const ShardTokenSchema = z.object({
   username: z.string().min(1).max(64),
@@ -137,6 +169,61 @@ export function setupAuthRoutes(app: Express) {
       sendError(res, 500, "INTERNAL", "Token refresh failed.");
     }
   });
+  // Phase 8 coordinator-only auth: the app registers with Firebase alone, so
+  // game usernames are allocated here instead of on a shard. Public — the
+  // register form checks before creating the Firebase account.
+  app.get("/auth/username-available", async (req: Request, res: Response) => {
+    try {
+      const username = typeof req.query.username === "string" ? req.query.username.trim() : "";
+      if (!USERNAME_RE.test(username)) {
+        return res.json({ ok: true, data: { username, available: false, reason: "INVALID_FORMAT" } });
+      }
+      const owner = await usernameOwnerUid(username);
+      res.json({ ok: true, data: { username, available: owner === null } });
+    } catch (error) {
+      console.error("[auth/username-available]", error);
+      sendError(res, 500, "INTERNAL", "Availability check failed.");
+    }
+  });
+
+  // Claims a username for the authenticated Firebase account: transactional
+  // claim in /coordinator/usernameIndex (lowercased) plus the profile write
+  // that select-server and other players read. One-shot — renames still go
+  // through a shard's /api/changeUsername, not here.
+  app.post("/auth/claim-username", async (req: Request, res: Response) => {
+    try {
+      const identity = await uidFromIdTokenHeader(req);
+      if (!identity) {
+        return sendError(res, 401, "INVALID_ID_TOKEN", "Send a valid Firebase ID token as 'Authorization: Bearer <token>'.");
+      }
+      const parsed = ClaimUsernameSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return sendError(res, 400, "INVALID_USERNAME", "Username must be 3-20 letters and numbers.");
+      }
+      const { username } = parsed.data;
+      const { uid } = identity;
+
+      const existing = await getProfileUsername(uid);
+      if (existing && existing !== username) {
+        return sendError(res, 409, "USERNAME_ALREADY_SET", `This account already has the username "${existing}".`);
+      }
+
+      const owner = await usernameOwnerUid(username);
+      if (owner && owner !== uid) {
+        return sendError(res, 409, "USERNAME_TAKEN", "That username is already taken.");
+      }
+      if (!(await getStore().claimUsername(username.toLowerCase(), uid))) {
+        return sendError(res, 409, "USERNAME_TAKEN", "That username is already taken.");
+      }
+
+      await setProfileUsername(uid, username);
+      res.json({ ok: true, data: { username } });
+    } catch (error) {
+      console.error("[auth/claim-username]", error);
+      sendError(res, 500, "INTERNAL", "Username claim failed.");
+    }
+  });
+
   app.post("/auth/select-server", async (req: Request, res: Response) => {
     try {
       const header = req.headers.authorization;
@@ -192,6 +279,9 @@ export function setupAuthRoutes(app: Express) {
         data: {
           token,
           expiresAt,
+          // Phase 8: the client logs in with email only, so this is where it
+          // learns (and caches) its game username.
+          username,
           server: {
             id: shard.id,
             name: shard.name,

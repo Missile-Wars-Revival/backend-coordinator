@@ -12,10 +12,7 @@
       ".indexOn": ["username"],
       ".read": "auth != null",
       "$uid": {
-        ".write": "auth != null && auth.uid === $uid",
-        "username": { ".validate": "newData.isString() && newData.val().length >= 3 && newData.val().length <= 64" },
-        "lastShardId": { ".validate": "newData.isString()" },
-        "updatedAt": { ".validate": "newData.isNumber()" }
+        ".write": false
       }
     },
 

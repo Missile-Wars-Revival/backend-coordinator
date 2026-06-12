@@ -63,6 +63,11 @@ export interface Store {
   addSession(session: SessionRecord): Promise<void>;
   recordServerUse(userId: string, shard: ShardRecord): Promise<void>;
   getServerHistory(userId: string): Promise<ServerHistoryEntry[]>;
+  // Phase 8 coordinator-only auth: global username uniqueness. Claims are
+  // keyed on the lowercased username; returns true when the name is now (or
+  // was already) owned by this uid, false when another uid holds it.
+  claimUsername(usernameLower: string, userId: string): Promise<boolean>;
+  getUsernameClaim(usernameLower: string): Promise<string | null>;
 }
 
 export function hashApiKey(apiKey: string): string {
@@ -76,6 +81,7 @@ const KEY_INDEX = "coordinator/shardKeyIndex";
 const NAME_INDEX = "coordinator/shardNameIndex";
 const SESSIONS = "coordinator/sessions";
 const USERS = "coordinator/users";
+const USERNAME_INDEX = "coordinator/usernameIndex";
 
 // userId is a firebaseUID or "user:<username>" for legacy accounts; the colon
 // is a legal RTDB key character, so both forms can be used as-is.
@@ -169,6 +175,18 @@ class RtdbStore implements Store {
     const raw = snap.val() as Record<string, Omit<ServerHistoryEntry, "shardId">>;
     return sortHistory(Object.entries(raw).map(([shardId, entry]) => ({ ...entry, shardId })));
   }
+
+  async claimUsername(usernameLower: string, userId: string): Promise<boolean> {
+    const claim = await rtdb()
+      .ref(`${USERNAME_INDEX}/${usernameLower}`)
+      .transaction((current) => (current === null || current === userId ? userId : undefined));
+    return claim.committed && claim.snapshot.val() === userId;
+  }
+
+  async getUsernameClaim(usernameLower: string): Promise<string | null> {
+    const snap = await rtdb().ref(`${USERNAME_INDEX}/${usernameLower}`).get();
+    return snap.exists() ? (snap.val() as string) : null;
+  }
 }
 
 // RTDB keys cannot contain . $ # [ ] / — normalize shard names for the index.
@@ -184,6 +202,7 @@ class MemoryStore implements Store {
   private nameIndex = new Map<string, string>();
   private sessions: SessionRecord[] = [];
   private serverHistory = new Map<string, Map<string, ServerHistoryEntry>>();
+  private usernameIndex = new Map<string, string>();
 
   async createShard(shard: ShardRecord): Promise<boolean> {
     const key = nameKey(shard.name);
@@ -244,6 +263,17 @@ class MemoryStore implements Store {
 
   async getServerHistory(userId: string): Promise<ServerHistoryEntry[]> {
     return sortHistory([...(this.serverHistory.get(userId)?.values() ?? [])]);
+  }
+
+  async claimUsername(usernameLower: string, userId: string): Promise<boolean> {
+    const owner = this.usernameIndex.get(usernameLower);
+    if (owner && owner !== userId) return false;
+    this.usernameIndex.set(usernameLower, userId);
+    return true;
+  }
+
+  async getUsernameClaim(usernameLower: string): Promise<string | null> {
+    return this.usernameIndex.get(usernameLower) ?? null;
   }
 }
 

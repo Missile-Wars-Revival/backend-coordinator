@@ -25,6 +25,31 @@ export async function getProfileUsername(uid: string): Promise<string | null> {
   }
 }
 
+// Reverse lookup over existing profiles (exact match; /profiles has
+// .indexOn username). The username index only covers Phase 8 claims, so
+// availability checks must also consult profiles — every account that ever
+// minted a token (or was migrated) has one.
+export async function getUidByProfileUsername(username: string): Promise<string | null> {
+  if (!firebaseAvailable()) return null;
+  const snap = await rtdb()
+    .ref("profiles")
+    .orderByChild("username")
+    .equalTo(username)
+    .limitToFirst(1)
+    .get();
+  if (!snap.exists()) return null;
+  const owners = Object.keys(snap.val() as Record<string, unknown>);
+  return owners[0] ?? null;
+}
+
+// Unlike bootstrapProfile this THROWS on failure: a username claim must not
+// report success while the profile (what select-server and other players
+// read) still lacks the name.
+export async function setProfileUsername(uid: string, username: string): Promise<void> {
+  if (!firebaseAvailable()) return;
+  await rtdb().ref(`profiles/${uid}`).update({ username, updatedAt: Date.now() });
+}
+
 export async function bootstrapProfile(uid: string, username: string, shardId: string): Promise<void> {
   if (!firebaseAvailable()) return;
   try {
