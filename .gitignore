@@ -57,3 +57,5 @@ next-env.d.ts
 .elasticbeanstalk/*
 !.elasticbeanstalk/*.cfg.yml
 !.elasticbeanstalk/*.global.yml
+
+rtdbrules.backup.*.json

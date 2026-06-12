@@ -3,6 +3,7 @@ import { getJwks } from "./keys";
 import { sendError } from "./middleware";
 import { setupAdminRoutes } from "./routes/admin";
 import { setupAuthRoutes } from "./routes/auth";
+import { setupRelayRoutes } from "./routes/relay";
 import { setupServerRoutes } from "./routes/servers";
 import { setupShardRoutes } from "./routes/shards";
 
@@ -36,6 +37,7 @@ export function buildApp(): Express {
   setupShardRoutes(app);
   setupServerRoutes(app);
   setupAuthRoutes(app);
+  setupRelayRoutes(app);
   setupAdminRoutes(app);
 
   app.use((_req, res) => sendError(res, 404, "NOT_FOUND", "Unknown route."));

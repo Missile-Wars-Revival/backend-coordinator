@@ -51,6 +51,37 @@ export function setupAuthRoutes(app: Express) {
     }
   });
 
+  // Lets a shard WITHOUT firebasecred.json (community hosts never get it)
+  // verify a client's Firebase ID token. The shard sends the idToken it
+  // received; the coordinator verifies it with the admin SDK and returns the
+  // identity claims the shard's login/register handlers need.
+  app.post("/auth/verify-id-token", shardAuth, async (req: Request, res: Response) => {
+    try {
+      const idToken = typeof req.body?.idToken === "string" ? req.body.idToken : null;
+      if (!idToken) {
+        return sendError(res, 400, "INVALID_BODY", "Body must be { idToken: string }.");
+      }
+      let decoded;
+      try {
+        decoded = await verifyFirebaseIdToken(idToken);
+      } catch {
+        return sendError(res, 401, "INVALID_ID_TOKEN", "Firebase ID token is invalid or expired.");
+      }
+      res.json({
+        ok: true,
+        data: {
+          uid: decoded.uid,
+          email: decoded.email ?? null,
+          name: (decoded.name as string | undefined) ?? null,
+          emailVerified: decoded.email_verified ?? false,
+        },
+      });
+    } catch (error) {
+      console.error("[auth/verify-id-token]", error);
+      sendError(res, 500, "INTERNAL", "Token verification failed.");
+    }
+  });
+
   // Exchanges a still-valid shard token for a fresh one with the same
   // identity and audience. Expired tokens are rejected — the client must log
   // in again through its shard.
