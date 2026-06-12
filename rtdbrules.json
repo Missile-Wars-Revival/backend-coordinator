@@ -47,6 +47,7 @@
     },
 
     "conversations": {
+      ".indexOn": ["participants"],
       ".read": "auth != null",
       ".write": "auth != null"
     },
