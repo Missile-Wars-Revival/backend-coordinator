@@ -17,6 +17,7 @@ interface PublicServer {
   publicWsUrl: string;
   verified: boolean;
   playerCount: number;
+  totalPlayerCount?: number;
   version?: string;
   lastHeartbeatAt?: number;
 }
@@ -31,6 +32,7 @@ function toPublic(shard: ShardRecord): PublicServer {
     publicWsUrl: shard.publicWsUrl,
     verified: shard.verified,
     playerCount: shard.playerCount,
+    ...(shard.totalPlayerCount !== undefined ? { totalPlayerCount: shard.totalPlayerCount } : {}),
     ...(shard.version ? { version: shard.version } : {}),
     ...(shard.lastHeartbeatAt ? { lastHeartbeatAt: shard.lastHeartbeatAt } : {}),
   };

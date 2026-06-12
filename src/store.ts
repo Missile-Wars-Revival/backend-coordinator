@@ -23,6 +23,7 @@ export interface ShardRecord {
   version?: string;
   gitSha?: string;
   playerCount: number;
+  totalPlayerCount?: number;
   lat?: number;
   lon?: number;
   lastHeartbeatAt?: number;

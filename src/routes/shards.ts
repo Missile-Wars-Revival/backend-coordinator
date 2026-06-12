@@ -21,6 +21,7 @@ const RegisterSchema = z.object({
 
 const HeartbeatSchema = z.object({
   playerCount: z.number().int().min(0).default(0),
+  totalPlayerCount: z.number().int().min(0).optional(),
   version: z.string().max(40).optional(),
   gitSha: z.string().max(64).optional(),
 });
@@ -77,6 +78,7 @@ export function setupShardRoutes(app: Express) {
         status: "pending",
         verified: false,
         playerCount: 0,
+        totalPlayerCount: 0,
         createdAt: now,
         updatedAt: now,
       };
@@ -114,6 +116,7 @@ export function setupShardRoutes(app: Express) {
       const patch: Partial<ShardRecord> = {
         playerCount: parsed.data.playerCount,
         lastHeartbeatAt: Date.now(),
+        ...(parsed.data.totalPlayerCount !== undefined ? { totalPlayerCount: parsed.data.totalPlayerCount } : {}),
         ...(parsed.data.version ? { version: parsed.data.version } : {}),
         ...(parsed.data.gitSha ? { gitSha: parsed.data.gitSha } : {}),
       };

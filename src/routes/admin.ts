@@ -227,7 +227,7 @@ async function load() {
         '<td><span class="pill ' + s.status + '">' + s.status + '</span> ' +
           (s.verified ? '<span class="pill verified">verified</span>' : '') +
           (s.listable ? '<div class="muted">discoverable</div>' : '<div class="muted">hidden from discovery</div>') + '</td>' +
-        '<td>' + (s.playerCount ?? 0) + '</td>' +
+        '<td>' + (s.playerCount ?? 0) + ' / ' + (s.totalPlayerCount ?? '?') + '<div class="muted">online / total</div></td>' +
         '<td>' + ago(s.lastHeartbeatAt) + '<div class="muted">' + when(s.lastHeartbeatAt) + '</div>' +
           (s.version ? '<div class="muted">version ' + esc(s.version) + '</div>' : '') +
           (s.gitSha ? '<div class="muted">git ' + esc(s.gitSha) + '</div>' : '') + '</td>' +
