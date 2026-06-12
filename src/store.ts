@@ -38,6 +38,20 @@ export interface SessionRecord {
   expiresAt: number;
 }
 
+// Phase 7: per-user record of which shards they have played on, written only
+// by the coordinator (Admin SDK) on every token mint. The display fields are
+// snapshots so the selector can still render a server that has since gone
+// offline or been delisted.
+export interface ServerHistoryEntry {
+  shardId: string;
+  firstUsedAt: number;
+  lastUsedAt: number;
+  useCount: number;
+  lastServerName: string;
+  lastRegion: string;
+  lastVerified: boolean;
+}
+
 export interface Store {
   createShard(shard: ShardRecord): Promise<boolean>;
   getShard(id: string): Promise<ShardRecord | null>;
@@ -47,6 +61,8 @@ export interface Store {
   updateShard(id: string, patch: Partial<ShardRecord>): Promise<void>;
   rotateShardKey(id: string, oldKeyHash: string, newKeyHash: string): Promise<void>;
   addSession(session: SessionRecord): Promise<void>;
+  recordServerUse(userId: string, shard: ShardRecord): Promise<void>;
+  getServerHistory(userId: string): Promise<ServerHistoryEntry[]>;
 }
 
 export function hashApiKey(apiKey: string): string {
@@ -59,6 +75,17 @@ const SHARDS = "coordinator/shards";
 const KEY_INDEX = "coordinator/shardKeyIndex";
 const NAME_INDEX = "coordinator/shardNameIndex";
 const SESSIONS = "coordinator/sessions";
+const USERS = "coordinator/users";
+
+// userId is a firebaseUID or "user:<username>" for legacy accounts; the colon
+// is a legal RTDB key character, so both forms can be used as-is.
+function historyPath(userId: string, shardId: string): string {
+  return `${USERS}/${userId}/serverHistory/${shardId}`;
+}
+
+function sortHistory(entries: ServerHistoryEntry[]): ServerHistoryEntry[] {
+  return entries.sort((a, b) => b.lastUsedAt - a.lastUsedAt);
+}
 
 class RtdbStore implements Store {
   async createShard(shard: ShardRecord): Promise<boolean> {
@@ -121,6 +148,27 @@ class RtdbStore implements Store {
   async addSession(session: SessionRecord): Promise<void> {
     await rtdb().ref(SESSIONS).push(session);
   }
+
+  async recordServerUse(userId: string, shard: ShardRecord): Promise<void> {
+    const now = Date.now();
+    await rtdb()
+      .ref(historyPath(userId, shard.id))
+      .transaction((current: Partial<ServerHistoryEntry> | null) => ({
+        firstUsedAt: current?.firstUsedAt ?? now,
+        lastUsedAt: now,
+        useCount: (current?.useCount ?? 0) + 1,
+        lastServerName: shard.name,
+        lastRegion: shard.region,
+        lastVerified: shard.verified,
+      }));
+  }
+
+  async getServerHistory(userId: string): Promise<ServerHistoryEntry[]> {
+    const snap = await rtdb().ref(`${USERS}/${userId}/serverHistory`).get();
+    if (!snap.exists()) return [];
+    const raw = snap.val() as Record<string, Omit<ServerHistoryEntry, "shardId">>;
+    return sortHistory(Object.entries(raw).map(([shardId, entry]) => ({ ...entry, shardId })));
+  }
 }
 
 // RTDB keys cannot contain . $ # [ ] / — normalize shard names for the index.
@@ -135,6 +183,7 @@ class MemoryStore implements Store {
   private keyIndex = new Map<string, string>();
   private nameIndex = new Map<string, string>();
   private sessions: SessionRecord[] = [];
+  private serverHistory = new Map<string, Map<string, ServerHistoryEntry>>();
 
   async createShard(shard: ShardRecord): Promise<boolean> {
     const key = nameKey(shard.name);
@@ -175,6 +224,26 @@ class MemoryStore implements Store {
 
   async addSession(session: SessionRecord): Promise<void> {
     this.sessions.push(session);
+  }
+
+  async recordServerUse(userId: string, shard: ShardRecord): Promise<void> {
+    const now = Date.now();
+    const userHistory = this.serverHistory.get(userId) ?? new Map<string, ServerHistoryEntry>();
+    const current = userHistory.get(shard.id);
+    userHistory.set(shard.id, {
+      shardId: shard.id,
+      firstUsedAt: current?.firstUsedAt ?? now,
+      lastUsedAt: now,
+      useCount: (current?.useCount ?? 0) + 1,
+      lastServerName: shard.name,
+      lastRegion: shard.region,
+      lastVerified: shard.verified,
+    });
+    this.serverHistory.set(userId, userHistory);
+  }
+
+  async getServerHistory(userId: string): Promise<ServerHistoryEntry[]> {
+    return sortHistory([...(this.serverHistory.get(userId)?.values() ?? [])]);
   }
 }
 

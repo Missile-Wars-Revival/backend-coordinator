@@ -1,9 +1,12 @@
 import type { Express, Request, Response } from "express";
 import { sendError } from "../middleware";
-import { getStore, isShardListable, reconcileOfflineShards, type ShardRecord } from "../store";
+import { verifyFirebaseIdToken } from "../firebase";
+import { getStore, isShardListable, reconcileOfflineShards, type ServerHistoryEntry, type ShardRecord } from "../store";
 
 // Public server discovery. Only active shards with a fresh heartbeat are
 // listed; the `verified` flag drives the frontend's badge / warning UI.
+// Phase 7: when the request carries a Firebase ID token, the response also
+// includes that user's server history so the selector can show recents first.
 
 interface PublicServer {
   id: string;
@@ -33,6 +36,24 @@ function toPublic(shard: ShardRecord): PublicServer {
   };
 }
 
+// History entries carry an `available` flag (joined against the currently
+// listable set) so the client can render past servers that are offline or
+// delisted as unavailable — select-server refuses them anyway, this is UX.
+type PublicHistoryEntry = ServerHistoryEntry & { available: boolean };
+
+// Best-effort identity: a missing, expired, or malformed ID token just means
+// an anonymous directory request — discovery itself must never fail over it.
+async function uidFromOptionalAuth(req: Request): Promise<string | null> {
+  const header = req.headers.authorization;
+  if (typeof header !== "string" || !header.startsWith("Bearer ")) return null;
+  try {
+    const decoded = await verifyFirebaseIdToken(header.slice("Bearer ".length).trim());
+    return decoded.uid;
+  } catch {
+    return null;
+  }
+}
+
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const toRad = (d: number) => (d * Math.PI) / 180;
   const dLat = toRad(lat2 - lat1);
@@ -43,10 +64,25 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
 }
 
 export function setupServerRoutes(app: Express) {
-  app.get("/servers", async (_req: Request, res: Response) => {
+  app.get("/servers", async (req: Request, res: Response) => {
     try {
       const shards = (await reconcileOfflineShards(await getStore().listShards())).filter((s) => isShardListable(s));
-      res.json({ ok: true, data: { servers: shards.map(toPublic) } });
+
+      let history: PublicHistoryEntry[] = [];
+      const uid = await uidFromOptionalAuth(req);
+      if (uid) {
+        try {
+          const listableIds = new Set(shards.map((s) => s.id));
+          history = (await getStore().getServerHistory(uid)).map((entry) => ({
+            ...entry,
+            available: listableIds.has(entry.shardId),
+          }));
+        } catch (error) {
+          console.error("[servers] history read failed:", (error as Error).message);
+        }
+      }
+
+      res.json({ ok: true, data: { servers: shards.map(toPublic), history } });
     } catch (error) {
       console.error("[servers]", error);
       sendError(res, 500, "INTERNAL", "Failed to list servers.");

@@ -3,8 +3,20 @@ import { z } from "zod";
 import { signShardToken, verifyShardToken } from "../keys";
 import { getAuthedShard, sendError, shardAuth } from "../middleware";
 import { verifyFirebaseIdToken } from "../firebase";
-import { bootstrapProfile } from "../social";
-import { getStore, isShardListable } from "../store";
+import { bootstrapProfile, getProfileUsername } from "../social";
+import { getStore, isShardListable, type ShardRecord } from "../store";
+
+// Phase 7: every successful mint records the shard in the user's server
+// history (/coordinator/users/<uid>/serverHistory/<shardId>) so the selector
+// can offer a "recent servers" / continue flow. Non-fatal — history must
+// never break a token mint.
+async function recordServerUse(userId: string, shard: ShardRecord): Promise<void> {
+  try {
+    await getStore().recordServerUse(userId, shard);
+  } catch (error) {
+    console.error(`[auth] server-history write failed for ${userId}:`, (error as Error).message);
+  }
+}
 
 // Server selection: the client proves identity with a Firebase ID token, and
 // the coordinator mints a short-lived RS256 "shard token" (aud = shardId).
@@ -35,14 +47,16 @@ export function setupAuthRoutes(app: Express) {
       const { username, firebaseUID } = parsed.data;
 
       const { token, expiresAt } = await signShardToken({ username, firebaseUID, shardId: shard.id });
+      const userId = firebaseUID ?? `user:${username}`;
       await getStore().addSession({
-        userId: firebaseUID ?? `user:${username}`,
+        userId,
         username,
         shardId: shard.id,
         issuedAt: Date.now(),
         expiresAt,
       });
-      await bootstrapProfile(firebaseUID ?? `user:${username}`, username, shard.id);
+      await bootstrapProfile(userId, username, shard.id);
+      await recordServerUse(userId, shard);
 
       res.json({ ok: true, data: { token, expiresAt } });
     } catch (error) {
@@ -116,6 +130,7 @@ export function setupAuthRoutes(app: Express) {
         shardId,
       });
       await bootstrapProfile(payload.sub, username, shardId);
+      await recordServerUse(payload.sub, shard);
       res.json({ ok: true, data: { token: newToken, expiresAt } });
     } catch (error) {
       console.error("[auth/refresh]", error);
@@ -147,9 +162,14 @@ export function setupAuthRoutes(app: Express) {
         return sendError(res, 404, "SERVER_UNAVAILABLE", "That server is not currently available.");
       }
 
-      // Usernames live in RTDB profiles; fall back to token claims.
+      // The game username lives in RTDB profiles (bootstrapped on every mint,
+      // synced on rename); token claims are only a fallback for accounts that
+      // have never minted through the coordinator before.
       const username =
-        (decoded.name as string | undefined) ?? decoded.email?.split("@")[0] ?? decoded.uid;
+        (await getProfileUsername(decoded.uid)) ??
+        (decoded.name as string | undefined) ??
+        decoded.email?.split("@")[0] ??
+        decoded.uid;
 
       const { token, expiresAt } = await signShardToken({
         firebaseUID: decoded.uid,
@@ -165,6 +185,7 @@ export function setupAuthRoutes(app: Express) {
         expiresAt,
       });
       await bootstrapProfile(decoded.uid, username, shard.id);
+      await recordServerUse(decoded.uid, shard);
 
       res.json({
         ok: true,

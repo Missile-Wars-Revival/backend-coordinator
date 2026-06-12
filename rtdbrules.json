@@ -9,8 +9,9 @@
     },
 
     "profiles": {
+      ".indexOn": ["username"],
+      ".read": "auth != null",
       "$uid": {
-        ".read": "auth != null",
         ".write": "auth != null && auth.uid === $uid",
         "username": { ".validate": "newData.isString() && newData.val().length >= 3 && newData.val().length <= 64" },
         "lastShardId": { ".validate": "newData.isString()" },
@@ -20,7 +21,7 @@
 
     "friends": {
       "$uid": {
-        ".read": "auth != null && auth.uid === $uid",
+        ".read": "auth != null",
         ".write": "auth != null && auth.uid === $uid"
       }
     },
