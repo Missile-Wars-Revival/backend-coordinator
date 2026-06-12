@@ -67,7 +67,8 @@ violate the coordinator/shard split.
 - `src/routes/servers.ts` - public server discovery; with an optional Firebase
   ID token, `GET /servers` also returns the caller's server history.
 - `src/routes/auth.ts` - shard token mint, Firebase ID token verify, refresh,
-  client select-server flow.
+  client select-server flow, and Phase 8 username claim/availability
+  (`POST /auth/claim-username`, `GET /auth/username-available`).
 - `src/routes/relay.ts` - Expo push relay backed by Firebase central token and
   preference paths.
 - `src/routes/admin.ts` - admin API and self-contained `/admin` HTML page.
@@ -111,6 +112,11 @@ Coordinator control-plane state is under these RTDB paths:
   server history (`firstUsedAt`, `lastUsedAt`, `useCount` plus name/region/
   verified snapshots), written on every token mint; `userId` is the
   firebaseUID or `user:<username>` for legacy accounts
+- `/coordinator/usernameIndex/<usernameLower>` - Phase 8 global username
+  claims (lowercased name -> firebaseUID), written transactionally by
+  `POST /auth/claim-username`. Availability checks also consult `/profiles`
+  for names that predate central claims. `/profiles` writes are locked to
+  the Admin SDK in `rtdbrules.json` so this index cannot be bypassed.
 
 Clients must not read or write `/coordinator/*` directly. Keep
 `rtdbrules.json` aligned with any new Firebase paths.

@@ -245,12 +245,19 @@ X-Admin-Key: <ADMIN_API_KEY>
 - `GET /shards/name-available?name=` - check whether a shard name is unused.
 - `POST /shards/register` - open shard registration; returns API key once; rejects duplicate names.
 - `POST /shards/heartbeat` - shard-authenticated heartbeat.
-- `GET /servers` - public list of online shards.
+- `GET /servers` - public list of online shards; with an optional
+  `Authorization: Bearer <Firebase idToken>` it also returns the caller's
+  server history (recent servers, availability).
 - `GET /servers/best?lat=&lon=` - nearest verified/least-loaded shard selection.
 - `POST /auth/shard-token` - shard-authenticated token minting.
 - `POST /auth/verify-id-token` - shard-authenticated Firebase ID token verify.
 - `POST /auth/refresh` - refresh a still-valid coordinator-issued shard token.
-- `POST /auth/select-server` - client flow using a Firebase ID token.
+- `POST /auth/select-server` - client flow using a Firebase ID token; mints the
+  shard token, records server history, and returns the account's username.
+- `GET /auth/username-available?username=` - public availability check backing
+  the app's register form (3-20 letters/numbers, globally unique).
+- `POST /auth/claim-username` - client flow using a Firebase ID token; claims a
+  game username centrally (transactional) and writes it to the profile.
 - `POST /relay/push` - shard-authenticated Expo push relay.
 - `GET /admin` and `/admin/api/*` - admin portal and admin API.
 
