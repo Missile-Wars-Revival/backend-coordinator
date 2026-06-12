@@ -52,7 +52,52 @@ const PushSchema = z.object({
   silent: z.boolean().default(false),
 });
 
+const FriendsSchema = z.object({
+  firebaseUID: z.string().min(1).max(128),
+});
+
+function friendUidsFromSnapshotValue(value: unknown): string[] {
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value as Record<string, unknown>)
+    .filter(([, edge]) => edge !== false && edge !== null)
+    .map(([uid]) => uid);
+}
+
 export function setupRelayRoutes(app: Express) {
+  app.post("/relay/friends", shardAuth, async (req: Request, res: Response) => {
+    try {
+      if (!firebaseAvailable()) {
+        return sendError(res, 503, "FIREBASE_UNSET", "Coordinator has no Firebase credentials configured.");
+      }
+
+      const parsed = FriendsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return sendError(res, 400, "INVALID_BODY", parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
+      }
+
+      const { firebaseUID } = parsed.data;
+      const snap = await rtdb().ref(`friends/${firebaseUID}`).get();
+      const friendUids = snap.exists() ? friendUidsFromSnapshotValue(snap.val()) : [];
+      const names = await Promise.all(
+        friendUids.map(async (friendUid) => {
+          const nameSnap = await rtdb().ref(`profiles/${friendUid}/username`).get();
+          return nameSnap.exists() ? String(nameSnap.val()) : null;
+        })
+      );
+      const friends = [...new Set(
+        names
+          .filter((name): name is string => typeof name === "string")
+          .map((name) => name.trim())
+          .filter((name) => name.length > 0 && name.length <= 64)
+      )];
+
+      res.json({ ok: true, data: { friends } });
+    } catch (error) {
+      console.error("[relay/friends]", error);
+      sendError(res, 500, "INTERNAL", "Friend relay failed.");
+    }
+  });
+
   app.post("/relay/push", shardAuth, async (req: Request, res: Response) => {
     try {
       const shard = getAuthedShard(req);
