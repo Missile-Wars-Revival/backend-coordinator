@@ -1,6 +1,6 @@
 import type { Express, Request, Response } from "express";
 import { adminAuth, sendError } from "../middleware";
-import { getStore, hashApiKey, isShardListable } from "../store";
+import { getStore, hashApiKey, isShardListable, reconcileOfflineShards } from "../store";
 import { newShardApiKey } from "./shards";
 
 // Admin API + a small self-contained portal page. Everything under
@@ -14,7 +14,7 @@ export function setupAdminRoutes(app: Express) {
   // Full shard records (minus key hashes) — includes pending/disabled/stale.
   app.get("/admin/api/shards", adminAuth, async (_req: Request, res: Response) => {
     try {
-      const shards = await getStore().listShards();
+      const shards = await reconcileOfflineShards(await getStore().listShards());
       res.json({
         ok: true,
         data: {
@@ -88,6 +88,7 @@ const PORTAL_HTML = /* html */ `<!doctype html>
   .pill { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .75rem; border: 1px solid #30363d; }
   .pill.active { color: #3fb950; border-color: #3fb950; }
   .pill.pending { color: #d29922; border-color: #d29922; }
+  .pill.offline { color: #8b949e; border-color: #8b949e; }
   .pill.disabled { color: #f85149; border-color: #f85149; }
   .pill.verified { color: #58a6ff; border-color: #58a6ff; }
   .muted { color: #8b949e; font-size: .8rem; }
@@ -105,7 +106,7 @@ const PORTAL_HTML = /* html */ `<!doctype html>
 </div>
 <div id="msg"></div>
 <table id="tbl" hidden>
-  <thead><tr><th>Shard</th><th>Region</th><th>URLs</th><th>Status</th><th>Players</th><th>Last heartbeat</th><th>Actions</th></tr></thead>
+  <thead><tr><th>Shard</th><th>Owner</th><th>Region</th><th>URLs</th><th>Status</th><th>Players</th><th>Activity</th><th>Meta</th><th>Actions</th></tr></thead>
   <tbody></tbody>
 </table>
 <script>
@@ -133,6 +134,10 @@ function ago(ts) {
   return Math.round(s / 3600) + 'h ago';
 }
 
+function when(ts) {
+  return ts ? new Date(ts).toLocaleString() : '-';
+}
+
 async function load() {
   localStorage.setItem('mwAdminKey', keyInput.value);
   msg('Loading…');
@@ -144,13 +149,20 @@ async function load() {
       const tr = document.createElement('tr');
       tr.innerHTML =
         '<td><strong>' + esc(s.name) + '</strong><div class="muted">' + s.id + '</div>' +
-          (s.ownerContact ? '<div class="muted">' + esc(s.ownerContact) + '</div>' : '') + '</td>' +
+          (s.description ? '<div class="muted">' + esc(s.description) + '</div>' : '') + '</td>' +
+        '<td>' + esc(s.ownerContact || 'missing') + '</td>' +
         '<td>' + esc(s.region || '') + '</td>' +
         '<td class="muted">' + esc(s.publicHttpUrl) + '<br>' + esc(s.publicWsUrl || '') + '</td>' +
         '<td><span class="pill ' + s.status + '">' + s.status + '</span> ' +
-          (s.verified ? '<span class="pill verified">verified</span>' : '') + '</td>' +
+          (s.verified ? '<span class="pill verified">verified</span>' : '') +
+          (s.listable ? '<div class="muted">discoverable</div>' : '<div class="muted">hidden from discovery</div>') + '</td>' +
         '<td>' + (s.playerCount ?? 0) + '</td>' +
-        '<td>' + ago(s.lastHeartbeatAt) + (s.version ? '<div class="muted">v' + esc(s.version) + '</div>' : '') + '</td>' +
+        '<td>' + ago(s.lastHeartbeatAt) + '<div class="muted">' + when(s.lastHeartbeatAt) + '</div>' +
+          (s.version ? '<div class="muted">version ' + esc(s.version) + '</div>' : '') +
+          (s.gitSha ? '<div class="muted">git ' + esc(s.gitSha) + '</div>' : '') + '</td>' +
+        '<td><div class="muted">created ' + when(s.createdAt) + '</div>' +
+          '<div class="muted">updated ' + when(s.updatedAt) + '</div>' +
+          ((s.lat !== undefined && s.lon !== undefined) ? '<div class="muted">coords ' + esc(s.lat) + ', ' + esc(s.lon) + '</div>' : '') + '</td>' +
         '<td></td>';
       const actions = document.createElement('div');
       actions.className = 'actions';

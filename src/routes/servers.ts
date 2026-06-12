@@ -1,6 +1,6 @@
 import type { Express, Request, Response } from "express";
 import { sendError } from "../middleware";
-import { getStore, isShardListable, type ShardRecord } from "../store";
+import { getStore, isShardListable, reconcileOfflineShards, type ShardRecord } from "../store";
 
 // Public server discovery. Only active shards with a fresh heartbeat are
 // listed; the `verified` flag drives the frontend's badge / warning UI.
@@ -45,7 +45,7 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
 export function setupServerRoutes(app: Express) {
   app.get("/servers", async (_req: Request, res: Response) => {
     try {
-      const shards = (await getStore().listShards()).filter((s) => isShardListable(s));
+      const shards = (await reconcileOfflineShards(await getStore().listShards())).filter((s) => isShardListable(s));
       res.json({ ok: true, data: { servers: shards.map(toPublic) } });
     } catch (error) {
       console.error("[servers]", error);
@@ -59,7 +59,7 @@ export function setupServerRoutes(app: Express) {
       const lon = Number(req.query.lon);
       const hasCoords = Number.isFinite(lat) && Number.isFinite(lon);
 
-      const listable = (await getStore().listShards()).filter((s) => isShardListable(s));
+      const listable = (await reconcileOfflineShards(await getStore().listShards())).filter((s) => isShardListable(s));
       if (listable.length === 0) {
         return sendError(res, 404, "NO_SERVERS", "No servers are currently online.");
       }

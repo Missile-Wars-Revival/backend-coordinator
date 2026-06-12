@@ -86,6 +86,10 @@ FIREBASE_DATABASE_URL=https://missile-wars-432403-default-rtdb.firebaseio.com
 
 # Shards with older heartbeats are hidden from discovery.
 STALE_HEARTBEAT_SECONDS=120
+
+# After 5-10 missed 30s heartbeat windows, active shards are marked offline.
+SHARD_HEARTBEAT_INTERVAL_SECONDS=30
+OFFLINE_AFTER_MISSED_HEARTBEATS=5
 ```
 
 Generate the RS256 signing key:
@@ -170,8 +174,9 @@ curl -X POST http://localhost:3000/shards/register \
   }'
 ```
 
-The response includes `shardId` and `apiKey`. Save the API key immediately; only
-its hash is stored. In the shard backend `.env`, set:
+`ownerContact` must be a real email address. The response includes `shardId`
+and `apiKey`. Save the API key immediately; only its hash is stored. In the
+shard backend `.env`, set:
 
 ```env
 COORDINATOR_URL=http://localhost:3000

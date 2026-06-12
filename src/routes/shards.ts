@@ -14,7 +14,7 @@ const RegisterSchema = z.object({
   region: z.string().min(2).max(40),
   publicHttpUrl: z.string().url().max(200),
   publicWsUrl: z.string().url().max(200).optional(),
-  ownerContact: z.string().max(120).optional(),
+  ownerContact: z.string().email().max(120),
   lat: z.coerce.number().min(-90).max(90).optional(),
   lon: z.coerce.number().min(-180).max(180).optional(),
 });
@@ -96,8 +96,9 @@ export function setupShardRoutes(app: Express) {
         ...(parsed.data.version ? { version: parsed.data.version } : {}),
         ...(parsed.data.gitSha ? { gitSha: parsed.data.gitSha } : {}),
       };
-      // First heartbeat activates a pending shard (open-registration model).
-      if (shard.status === "pending") {
+      // First heartbeat activates a pending shard; a resumed heartbeat brings
+      // an offline shard back into discovery.
+      if (shard.status === "pending" || shard.status === "offline") {
         patch.status = "active";
       }
       await getStore().updateShard(shard.id, patch);

@@ -33,6 +33,11 @@ const EnvSchema = z.object({
 
   // A shard whose last heartbeat is older than this is hidden from discovery.
   STALE_HEARTBEAT_SECONDS: z.coerce.number().int().positive().default(120),
+
+  // Shards heartbeat every 30s by default. After this many missed heartbeat
+  // windows, the coordinator writes status=offline so admins can see it.
+  SHARD_HEARTBEAT_INTERVAL_SECONDS: z.coerce.number().int().positive().default(30),
+  OFFLINE_AFTER_MISSED_HEARTBEATS: z.coerce.number().int().min(5).max(10).default(5),
 });
 
 export const env = EnvSchema.parse(process.env);

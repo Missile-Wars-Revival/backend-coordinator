@@ -7,7 +7,7 @@ import { firebaseAvailable, rtdb } from "./firebase";
 // read or write them directly. A volatile in-memory store is used as a local
 // development fallback when Firebase credentials are not configured.
 
-export type ShardStatus = "pending" | "active" | "disabled";
+export type ShardStatus = "pending" | "active" | "offline" | "disabled";
 
 export interface ShardRecord {
   id: string;
@@ -187,4 +187,23 @@ export function isShardListable(shard: ShardRecord, now = Date.now()): boolean {
   if (shard.status !== "active") return false;
   if (!shard.lastHeartbeatAt) return false;
   return now - shard.lastHeartbeatAt <= env.STALE_HEARTBEAT_SECONDS * 1000;
+}
+
+export function isShardOfflineByHeartbeat(shard: ShardRecord, now = Date.now()): boolean {
+  if (shard.status !== "active") return false;
+  if (!shard.lastHeartbeatAt) return false;
+  const offlineAfterMs = env.SHARD_HEARTBEAT_INTERVAL_SECONDS * env.OFFLINE_AFTER_MISSED_HEARTBEATS * 1000;
+  return now - shard.lastHeartbeatAt > offlineAfterMs;
+}
+
+export async function reconcileOfflineShards(shards: ShardRecord[], now = Date.now()): Promise<ShardRecord[]> {
+  const store = getStore();
+  const reconciled = await Promise.all(
+    shards.map(async (shard) => {
+      if (!isShardOfflineByHeartbeat(shard, now)) return shard;
+      await store.updateShard(shard.id, { status: "offline" });
+      return { ...shard, status: "offline" as const, updatedAt: now };
+    })
+  );
+  return reconciled;
 }
