@@ -162,6 +162,14 @@ Then deploy with the Vercel CLI or the connected Git integration.
 
 ### Register a shard
 
+Shard names are unique after coordinator normalization, so `Official Main`,
+`official main`, and similar punctuation/spacing variants cannot be registered
+twice. To check before registering:
+
+```bash
+curl "http://localhost:3000/shards/name-available?name=Official%20Main"
+```
+
 ```bash
 curl -X POST http://localhost:3000/shards/register \
   -H "Content-Type: application/json" \
@@ -233,7 +241,8 @@ X-Admin-Key: <ADMIN_API_KEY>
 
 - `GET /health` - service health.
 - `GET /.well-known/jwks.json` - public JWT verification key.
-- `POST /shards/register` - open shard registration; returns API key once.
+- `GET /shards/name-available?name=` - check whether a shard name is unused.
+- `POST /shards/register` - open shard registration; returns API key once; rejects duplicate names.
 - `POST /shards/heartbeat` - shard-authenticated heartbeat.
 - `GET /servers` - public list of online shards.
 - `GET /servers/best?lat=&lon=` - nearest verified/least-loaded shard selection.

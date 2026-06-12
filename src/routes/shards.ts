@@ -25,11 +25,29 @@ const HeartbeatSchema = z.object({
   gitSha: z.string().max(64).optional(),
 });
 
+const NameAvailabilitySchema = z.object({
+  name: z.string().min(3).max(40),
+});
+
 export function newShardApiKey(): string {
   return `mw_shard_${randomBytes(24).toString("hex")}`;
 }
 
 export function setupShardRoutes(app: Express) {
+  app.get("/shards/name-available", async (req: Request, res: Response) => {
+    try {
+      const parsed = NameAvailabilitySchema.safeParse(req.query);
+      if (!parsed.success) {
+        return sendError(res, 400, "INVALID_QUERY", parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
+      }
+      const shardId = await getStore().getShardIdByName(parsed.data.name);
+      res.json({ ok: true, data: { name: parsed.data.name, available: !shardId } });
+    } catch (error) {
+      console.error("[shards/name-available]", error);
+      sendError(res, 500, "INTERNAL", "Name availability check failed.");
+    }
+  });
+
   app.post("/shards/register", async (req: Request, res: Response) => {
     try {
       const parsed = RegisterSchema.safeParse(req.body);
@@ -62,7 +80,10 @@ export function setupShardRoutes(app: Express) {
         createdAt: now,
         updatedAt: now,
       };
-      await store.createShard(shard);
+      const created = await store.createShard(shard);
+      if (!created) {
+        return sendError(res, 409, "NAME_TAKEN", "A shard with this name is already registered. Pick another server name.");
+      }
 
       // The raw key is returned exactly once; only its hash is stored.
       res.status(201).json({

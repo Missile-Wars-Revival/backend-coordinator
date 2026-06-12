@@ -39,7 +39,7 @@ export interface SessionRecord {
 }
 
 export interface Store {
-  createShard(shard: ShardRecord): Promise<void>;
+  createShard(shard: ShardRecord): Promise<boolean>;
   getShard(id: string): Promise<ShardRecord | null>;
   getShardIdByKeyHash(apiKeyHash: string): Promise<string | null>;
   getShardIdByName(nameLower: string): Promise<string | null>;
@@ -61,15 +61,25 @@ const NAME_INDEX = "coordinator/shardNameIndex";
 const SESSIONS = "coordinator/sessions";
 
 class RtdbStore implements Store {
-  async createShard(shard: ShardRecord): Promise<void> {
-    // Multi-path update keeps the record and both indexes consistent.
-    await rtdb()
-      .ref()
-      .update({
-        [`${SHARDS}/${shard.id}`]: shard,
-        [`${KEY_INDEX}/${shard.apiKeyHash}`]: shard.id,
-        [`${NAME_INDEX}/${nameKey(shard.name)}`]: shard.id,
-      });
+  async createShard(shard: ShardRecord): Promise<boolean> {
+    const nameIndexRef = rtdb().ref(`${NAME_INDEX}/${nameKey(shard.name)}`);
+    const claim = await nameIndexRef.transaction((current) => current ?? shard.id);
+    if (!claim.committed || claim.snapshot.val() !== shard.id) {
+      return false;
+    }
+
+    try {
+      await rtdb()
+        .ref()
+        .update({
+          [`${SHARDS}/${shard.id}`]: shard,
+          [`${KEY_INDEX}/${shard.apiKeyHash}`]: shard.id,
+        });
+      return true;
+    } catch (error) {
+      await nameIndexRef.transaction((current) => (current === shard.id ? null : current));
+      throw error;
+    }
   }
 
   async getShard(id: string): Promise<ShardRecord | null> {
@@ -126,10 +136,13 @@ class MemoryStore implements Store {
   private nameIndex = new Map<string, string>();
   private sessions: SessionRecord[] = [];
 
-  async createShard(shard: ShardRecord): Promise<void> {
+  async createShard(shard: ShardRecord): Promise<boolean> {
+    const key = nameKey(shard.name);
+    if (this.nameIndex.has(key)) return false;
     this.shards.set(shard.id, shard);
     this.keyIndex.set(shard.apiKeyHash, shard.id);
-    this.nameIndex.set(nameKey(shard.name), shard.id);
+    this.nameIndex.set(key, shard.id);
+    return true;
   }
 
   async getShard(id: string): Promise<ShardRecord | null> {
