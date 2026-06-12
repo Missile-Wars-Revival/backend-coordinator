@@ -259,7 +259,7 @@ async function act(id, action) {
 }
 
 async function rotate(id) {
-  if (!confirm('Rotate this shard\\'s API key? The old key stops working immediately.')) return;
+  if (!confirm("Rotate this shard's API key? The old key stops working immediately.")) return;
   try {
     const { apiKey } = await api('/admin/api/shards/' + id + '/rotate-key', { method: 'POST' });
     prompt('New API key (shown once — copy it now):', apiKey);
