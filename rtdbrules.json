@@ -1,0 +1,63 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "coordinator": {
+      ".read": false,
+      ".write": false
+    },
+
+    "profiles": {
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid === $uid",
+        "username": { ".validate": "newData.isString() && newData.val().length >= 3 && newData.val().length <= 64" },
+        "lastShardId": { ".validate": "newData.isString()" },
+        "updatedAt": { ".validate": "newData.isNumber()" }
+      }
+    },
+
+    "friends": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+
+    "friendRequests": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        "$fromUid": {
+          ".write": "auth != null && (auth.uid === $fromUid || auth.uid === $uid)"
+        }
+      }
+    },
+
+    "notificationPreferences": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+
+    "notificationTokens": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+
+    "conversations": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "users": {
+      "$username": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    }
+  }
+}
