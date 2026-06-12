@@ -43,3 +43,7 @@ export function buildApp(): Express {
   app.use((_req, res) => sendError(res, 404, "NOT_FOUND", "Unknown route."));
   return app;
 }
+
+const app = buildApp();
+
+export default app;
