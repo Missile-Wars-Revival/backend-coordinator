@@ -21,8 +21,8 @@ This repo implements the coordinator side of that plan.
 - Publish the JWT verification key at `/.well-known/jwks.json`.
 - Verify Firebase ID tokens for shards that do not have Firebase Admin creds.
 - Relay Expo push notifications without exposing player push tokens to shards.
-- Provide a simple admin portal at `/admin` for verification, disabling, and
-  shard API key rotation.
+- Provide a simple admin portal at `/admin` for verification, disabling, public
+  address edits, and shard API key rotation.
 
 ## Non-goals
 
@@ -223,7 +223,8 @@ http://localhost:3000/admin
 ```
 
 Paste `ADMIN_API_KEY` into the page. From there you can verify/unverify, disable
-or enable shards, and rotate a shard API key.
+or enable shards, edit their public HTTP/WebSocket URLs, and rotate a shard API
+key.
 
 The same admin actions are available under `/admin/api/*` with either:
 

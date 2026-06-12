@@ -1,4 +1,5 @@
 import type { Express, Request, Response } from "express";
+import { z } from "zod";
 import { adminAuth, sendError } from "../middleware";
 import { getStore, hashApiKey, isShardListable, reconcileOfflineShards } from "../store";
 import { newShardApiKey } from "./shards";
@@ -33,6 +34,7 @@ export function setupAdminRoutes(app: Express) {
   app.post("/admin/api/shards/:id/unverify", adminAuth, (req, res) => setFlags(req, res, { verified: false }));
   app.post("/admin/api/shards/:id/disable", adminAuth, (req, res) => setFlags(req, res, { status: "disabled" as const }));
   app.post("/admin/api/shards/:id/enable", adminAuth, (req, res) => setFlags(req, res, { status: "active" as const }));
+  app.post("/admin/api/shards/:id/urls", adminAuth, updateUrls);
 
   // Rotate a shard's API key (e.g. after a leak). Old key dies immediately;
   // the new key is returned once for the admin to hand to the shard owner.
@@ -49,6 +51,26 @@ export function setupAdminRoutes(app: Express) {
       sendError(res, 500, "INTERNAL", "Key rotation failed.");
     }
   });
+}
+
+const UrlUpdateSchema = z.object({
+  publicHttpUrl: z.string().url().max(200).refine((url) => hasProtocol(url, ["http:", "https:"]), {
+    message: "Must use http or https.",
+  }),
+  publicWsUrl: z
+    .string()
+    .url()
+    .max(200)
+    .refine((url) => hasProtocol(url, ["ws:", "wss:"]), { message: "Must use ws or wss." })
+    .optional(),
+});
+
+function hasProtocol(url: string, protocols: string[]): boolean {
+  try {
+    return protocols.includes(new URL(url).protocol);
+  } catch {
+    return false;
+  }
 }
 
 async function setFlags(
@@ -68,6 +90,27 @@ async function setFlags(
   }
 }
 
+async function updateUrls(req: Request, res: Response) {
+  try {
+    const parsed = UrlUpdateSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return sendError(res, 400, "INVALID_BODY", parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
+    }
+
+    const store = getStore();
+    const shard = await store.getShard(req.params.id);
+    if (!shard) return sendError(res, 404, "NOT_FOUND", "No such shard.");
+
+    const publicHttpUrl = parsed.data.publicHttpUrl;
+    const publicWsUrl = parsed.data.publicWsUrl ?? publicHttpUrl.replace(/^http/, "ws");
+    await store.updateShard(shard.id, { publicHttpUrl, publicWsUrl });
+    res.json({ ok: true, data: { shardId: shard.id, publicHttpUrl, publicWsUrl } });
+  } catch (error) {
+    console.error("[admin/updateUrls]", error);
+    sendError(res, 500, "INTERNAL", "URL update failed.");
+  }
+}
+
 const PORTAL_HTML = /* html */ `<!doctype html>
 <html lang="en">
 <head>
@@ -80,9 +123,11 @@ const PORTAL_HTML = /* html */ `<!doctype html>
   h1 { font-size: 1.3rem; }
   .bar { display: flex; gap: .5rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
   input { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: .5rem .75rem; min-width: 280px; }
+  label { display: block; color: #8b949e; font-size: .8rem; margin-bottom: .35rem; }
   button { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: .45rem .8rem; cursor: pointer; }
   button:hover { border-color: #8b949e; }
   button.primary { background: #238636; border-color: #238636; }
+  button.ghost { background: transparent; }
   table { border-collapse: collapse; width: 100%; }
   th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid #21262d; font-size: .9rem; vertical-align: top; }
   .pill { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .75rem; border: 1px solid #30363d; }
@@ -96,6 +141,12 @@ const PORTAL_HTML = /* html */ `<!doctype html>
   #msg.err { color: #f85149; }
   #msg.ok { color: #3fb950; }
   td .actions { display: flex; gap: .35rem; flex-wrap: wrap; }
+  .modal-backdrop { position: fixed; inset: 0; display: grid; place-items: center; background: rgb(1 4 9 / .76); padding: 1rem; }
+  .modal { width: min(560px, 100%); background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; box-shadow: 0 20px 48px rgb(1 4 9 / .45); }
+  .modal h2 { margin: 0 0 .25rem; font-size: 1rem; }
+  .modal .field { margin-top: .85rem; }
+  .modal input { box-sizing: border-box; width: 100%; min-width: 0; }
+  .modal .actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
 </style>
 </head>
 <body>
@@ -109,6 +160,25 @@ const PORTAL_HTML = /* html */ `<!doctype html>
   <thead><tr><th>Shard</th><th>Owner</th><th>Region</th><th>URLs</th><th>Status</th><th>Players</th><th>Activity</th><th>Meta</th><th>Actions</th></tr></thead>
   <tbody></tbody>
 </table>
+<div id="urlEditor" class="modal-backdrop" hidden>
+  <form id="urlForm" class="modal">
+    <h2>Edit server address</h2>
+    <div id="urlShardName" class="muted"></div>
+    <input id="urlShardId" type="hidden">
+    <div class="field">
+      <label for="publicHttpUrl">Public HTTP URL</label>
+      <input id="publicHttpUrl" type="url" placeholder="https://example.com" required>
+    </div>
+    <div class="field">
+      <label for="publicWsUrl">Public WebSocket URL</label>
+      <input id="publicWsUrl" type="url" placeholder="wss://example.com" required>
+    </div>
+    <div class="actions">
+      <button type="button" class="ghost" id="cancelUrlEdit">Cancel</button>
+      <button type="submit" class="primary">Save URLs</button>
+    </div>
+  </form>
+</div>
 <script>
 const $ = (s) => document.querySelector(s);
 const keyInput = $('#key');
@@ -169,6 +239,7 @@ async function load() {
       actions.append(
         btn(s.verified ? 'Unverify' : 'Verify', () => act(s.id, s.verified ? 'unverify' : 'verify')),
         btn(s.status === 'disabled' ? 'Enable' : 'Disable', () => act(s.id, s.status === 'disabled' ? 'enable' : 'disable')),
+        btn('Edit URLs', () => openUrlEditor(s)),
         btn('Rotate key', () => rotate(s.id)),
       );
       tr.lastElementChild.append(actions);
@@ -196,7 +267,39 @@ async function rotate(id) {
   } catch (e) { msg(e.message, 'err'); }
 }
 
+function openUrlEditor(s) {
+  $('#urlShardId').value = s.id;
+  $('#urlShardName').textContent = s.name + ' · ' + s.id;
+  $('#publicHttpUrl').value = s.publicHttpUrl || '';
+  $('#publicWsUrl').value = s.publicWsUrl || (s.publicHttpUrl || '').replace(/^http/, 'ws');
+  $('#urlEditor').hidden = false;
+  $('#publicHttpUrl').focus();
+}
+
+function closeUrlEditor() {
+  $('#urlEditor').hidden = true;
+  $('#urlForm').reset();
+}
+
+async function saveUrls(e) {
+  e.preventDefault();
+  const shardId = $('#urlShardId').value;
+  const publicHttpUrl = $('#publicHttpUrl').value.trim();
+  const publicWsUrl = $('#publicWsUrl').value.trim();
+  try {
+    await api('/admin/api/shards/' + shardId + '/urls', {
+      method: 'POST',
+      body: JSON.stringify({ publicHttpUrl, publicWsUrl }),
+    });
+    closeUrlEditor();
+    await load();
+  } catch (e) { msg(e.message, 'err'); }
+}
+
 $('#load').onclick = load;
+$('#cancelUrlEdit').onclick = closeUrlEditor;
+$('#urlForm').addEventListener('submit', saveUrls);
+$('#urlEditor').addEventListener('click', (e) => { if (e.target.id === 'urlEditor') closeUrlEditor(); });
 keyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') load(); });
 if (keyInput.value) load();
 </script>
