@@ -8,7 +8,7 @@ import {
   KNOWN_IDENTITY_BADGES,
   setIdentityBadge,
 } from "../social";
-import { getStore, hashApiKey, isShardListable, reconcileOfflineShards } from "../store";
+import { getStore, hashApiKey, isShardListable, reconcileOfflineShards, type BackendRelease } from "../store";
 import { newShardApiKey } from "./shards";
 
 // Admin API + a small self-contained portal page. Everything under
@@ -74,6 +74,60 @@ export function setupAdminRoutes(app: Express) {
     }
   });
 
+  // Phase 12: publish / read the latest approved backend release.
+  app.get("/admin/api/releases/backend", adminAuth, async (_req: Request, res: Response) => {
+    try {
+      res.json({ ok: true, data: { release: await getStore().getLatestRelease() } });
+    } catch (error) {
+      console.error("[admin/releases:get]", error);
+      sendError(res, 500, "INTERNAL", "Failed to read the release.");
+    }
+  });
+
+  app.post("/admin/api/releases/backend", adminAuth, async (req: Request, res: Response) => {
+    try {
+      const parsed = ReleaseSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return sendError(res, 400, "INVALID_BODY", parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
+      }
+      const release: BackendRelease = { ...parsed.data, publishedAt: Date.now() };
+      await getStore().setLatestRelease(release);
+      res.json({ ok: true, data: { release } });
+    } catch (error) {
+      console.error("[admin/releases:post]", error);
+      sendError(res, 500, "INTERNAL", "Failed to publish the release.");
+    }
+  });
+
+  // Phase 12: mark a shard to update on its next heartbeat (no host shell
+  // access needed). Cleared by the heartbeat handler once delivered.
+  app.post("/admin/api/shards/:id/request-update", adminAuth, async (req: Request, res: Response) => {
+    try {
+      const store = getStore();
+      const shard = await store.getShard(req.params.id);
+      if (!shard) return sendError(res, 404, "NOT_FOUND", "No such shard.");
+      await store.updateShard(shard.id, { updateRequested: true });
+      res.json({ ok: true, data: { shardId: shard.id, updateRequested: true } });
+    } catch (error) {
+      console.error("[admin/request-update]", error);
+      sendError(res, 500, "INTERNAL", "Failed to request update.");
+    }
+  });
+
+  // Phase 12: permanently delete a shard (distinct from reversible disable).
+  app.post("/admin/api/shards/:id/delete", adminAuth, async (req: Request, res: Response) => {
+    try {
+      const store = getStore();
+      const shard = await store.getShard(req.params.id);
+      if (!shard) return sendError(res, 404, "NOT_FOUND", "No such shard.");
+      await store.deleteShard(shard);
+      res.json({ ok: true, data: { shardId: shard.id, deleted: true } });
+    } catch (error) {
+      console.error("[admin/delete-shard]", error);
+      sendError(res, 500, "INTERNAL", "Failed to delete shard.");
+    }
+  });
+
   // Grant or revoke a single identity badge for a user.
   app.post("/admin/api/identity-badges", adminAuth, async (req: Request, res: Response) => {
     try {
@@ -101,6 +155,16 @@ const IdentityBadgeSchema = z.object({
   username: z.string().min(1).max(64),
   badge: z.string().min(1).max(40),
   granted: z.boolean(),
+});
+
+const ReleaseSchema = z.object({
+  version: z.string().min(1).max(40),
+  gitSha: z.string().max(64).optional(),
+  imageDigest: z.string().max(200).optional(),
+  minimumSupportedVersion: z.string().max(40).optional(),
+  rolloutPercent: z.coerce.number().int().min(0).max(100).optional(),
+  migrationRequired: z.boolean().optional(),
+  critical: z.boolean().optional(),
 });
 
 const UrlUpdateSchema = z.object({
@@ -187,9 +251,9 @@ const PORTAL_HTML = /* html */ `<!doctype html>
   .pill.disabled { color: #f85149; border-color: #f85149; }
   .pill.verified { color: #58a6ff; border-color: #58a6ff; }
   .muted { color: #8b949e; font-size: .8rem; }
-  #msg, #badgeMsg { margin: .75rem 0; min-height: 1.2rem; font-size: .9rem; }
-  #msg.err, #badgeMsg.err { color: #f85149; }
-  #msg.ok, #badgeMsg.ok { color: #3fb950; }
+  #msg, #badgeMsg, #releaseMsg { margin: .75rem 0; min-height: 1.2rem; font-size: .9rem; }
+  #msg.err, #badgeMsg.err, #releaseMsg.err { color: #f85149; }
+  #msg.ok, #badgeMsg.ok, #releaseMsg.ok { color: #3fb950; }
   td .actions { display: flex; gap: .35rem; flex-wrap: wrap; }
   .modal-backdrop { position: fixed; inset: 0; display: grid; place-items: center; background: rgb(1 4 9 / .76); padding: 1rem; }
   .modal-backdrop[hidden] { display: none !important; }
@@ -238,6 +302,21 @@ const PORTAL_HTML = /* html */ `<!doctype html>
 </div>
 <div id="badgeMsg"></div>
 <div id="badgePanel" hidden><div id="badgeRow" class="actions"></div></div>
+<h1 style="font-size:1.05rem;margin-top:2.25rem;">Backend release</h1>
+<div class="muted" style="margin-bottom:.6rem;">The latest approved backend version. Shards compare their <code>package.json</code> version against this on each heartbeat: behind → update_available (gated by rollout %); below the minimum → update_required (hidden from discovery until updated).</div>
+<form id="releaseForm" class="bar" style="flex-wrap:wrap; align-items:flex-end;">
+  <div><label for="relVersion">Version (required)</label><input id="relVersion" placeholder="1.1.0" style="min-width:120px"></div>
+  <div><label for="relMin">Minimum supported</label><input id="relMin" placeholder="1.0.0" style="min-width:120px"></div>
+  <div><label for="relRollout">Rollout %</label><input id="relRollout" type="number" min="0" max="100" placeholder="100" style="min-width:90px"></div>
+  <div><label for="relGitSha">Git SHA</label><input id="relGitSha" placeholder="optional" style="min-width:120px"></div>
+  <div><label for="relDigest">Image digest</label><input id="relDigest" placeholder="optional" style="min-width:140px"></div>
+  <label style="display:flex;gap:.35rem;align-items:center;"><input id="relMigration" type="checkbox"> migration</label>
+  <label style="display:flex;gap:.35rem;align-items:center;"><input id="relCritical" type="checkbox"> critical</label>
+  <button class="primary" type="submit">Publish</button>
+  <button type="button" id="relLoad">Refresh</button>
+</form>
+<div id="releaseMsg"></div>
+<div id="releaseCurrent" class="muted"></div>
 <script>
 const $ = (s) => document.querySelector(s);
 const keyInput = $('#key');
@@ -288,7 +367,11 @@ async function load() {
         '<td>' + (s.playerCount ?? 0) + ' / ' + (s.totalPlayerCount ?? '?') + '<div class="muted">online / total</div></td>' +
         '<td>' + ago(s.lastHeartbeatAt) + '<div class="muted">' + when(s.lastHeartbeatAt) + '</div>' +
           (s.version ? '<div class="muted">version ' + esc(s.version) + '</div>' : '') +
-          (s.gitSha ? '<div class="muted">git ' + esc(s.gitSha) + '</div>' : '') + '</td>' +
+          (s.gitSha ? '<div class="muted">git ' + esc(s.gitSha) + '</div>' : '') +
+          (s.updateStatus ? '<div class="muted">update: ' + esc(s.updateStatus) + (s.updateRequested ? ' (requested)' : '') + '</div>' : '') +
+          (s.autoUpdate === false ? '<div class="muted">auto-update off</div>' : '') +
+          (s.lastUpdateAttemptAt ? '<div class="muted">last update try ' + ago(s.lastUpdateAttemptAt) + '</div>' : '') +
+          (s.lastUpdateError ? '<div class="muted" style="color:#f85149">' + esc(s.lastUpdateError) + '</div>' : '') + '</td>' +
         '<td><div class="muted">created ' + when(s.createdAt) + '</div>' +
           '<div class="muted">updated ' + when(s.updatedAt) + '</div>' +
           ((s.lat !== undefined && s.lon !== undefined) ? '<div class="muted">coords ' + esc(s.lat) + ', ' + esc(s.lon) + '</div>' : '') + '</td>' +
@@ -300,6 +383,8 @@ async function load() {
         btn(s.status === 'disabled' ? 'Enable' : 'Disable', () => act(s.id, s.status === 'disabled' ? 'enable' : 'disable')),
         btn('Edit URLs', () => openUrlEditor(s)),
         btn('Rotate key', () => rotate(s.id)),
+        btn('Request update', () => act(s.id, 'request-update')),
+        btn('Delete', () => del(s.id, s.name)),
       );
       tr.lastElementChild.append(actions);
       tbody.append(tr);
@@ -324,6 +409,13 @@ async function rotate(id) {
     prompt('New API key (shown once — copy it now):', apiKey);
     await load();
   } catch (e) { msg(e.message, 'err'); }
+}
+
+async function del(id, name) {
+  if (!confirm('Permanently DELETE shard "' + name + '"?\\n\\nThis removes its record, API key, and server history everywhere. It cannot be undone. Use Disable instead to reversibly delist it.')) return;
+  if (!confirm('Are you sure? This is irreversible.')) return;
+  try { await api('/admin/api/shards/' + id + '/delete', { method: 'POST' }); await load(); }
+  catch (e) { msg(e.message, 'err'); }
 }
 
 function openUrlEditor(s) {
@@ -392,12 +484,57 @@ async function setBadge(username, badge, granted) {
 
 $('#badgeLoad').onclick = loadBadges;
 $('#badgeUser').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadBadges(); });
+
+function releaseMsg(text, cls) { const el = $('#releaseMsg'); el.textContent = text; el.className = cls || ''; }
+
+async function loadRelease() {
+  try {
+    const { release } = await api('/admin/api/releases/backend');
+    if (!release) { $('#releaseCurrent').textContent = 'No release published yet.'; return; }
+    $('#relVersion').value = release.version || '';
+    $('#relMin').value = release.minimumSupportedVersion || '';
+    $('#relRollout').value = release.rolloutPercent ?? '';
+    $('#relGitSha').value = release.gitSha || '';
+    $('#relDigest').value = release.imageDigest || '';
+    $('#relMigration').checked = !!release.migrationRequired;
+    $('#relCritical').checked = !!release.critical;
+    $('#releaseCurrent').textContent = 'Current: v' + release.version +
+      (release.minimumSupportedVersion ? ', min ' + release.minimumSupportedVersion : '') +
+      ', rollout ' + (release.rolloutPercent ?? 100) + '%' +
+      (release.critical ? ', critical' : '') +
+      (release.migrationRequired ? ', migration' : '') +
+      ' · published ' + when(release.publishedAt);
+  } catch (e) { releaseMsg(e.message, 'err'); }
+}
+
+async function publishRelease(e) {
+  e.preventDefault();
+  const version = $('#relVersion').value.trim();
+  if (!version) return releaseMsg('Version is required.', 'err');
+  const body = { version };
+  const min = $('#relMin').value.trim(); if (min) body.minimumSupportedVersion = min;
+  const rollout = $('#relRollout').value.trim(); if (rollout !== '') body.rolloutPercent = Number(rollout);
+  const gitSha = $('#relGitSha').value.trim(); if (gitSha) body.gitSha = gitSha;
+  const digest = $('#relDigest').value.trim(); if (digest) body.imageDigest = digest;
+  body.migrationRequired = $('#relMigration').checked;
+  body.critical = $('#relCritical').checked;
+  try {
+    await api('/admin/api/releases/backend', { method: 'POST', body: JSON.stringify(body) });
+    releaseMsg('Published v' + version + '.', 'ok');
+    await loadRelease();
+    await load();
+  } catch (err) { releaseMsg(err.message, 'err'); }
+}
+
+$('#releaseForm').addEventListener('submit', publishRelease);
+$('#relLoad').onclick = loadRelease;
+
 $('#load').onclick = load;
 $('#cancelUrlEdit').onclick = closeUrlEditor;
 $('#urlForm').addEventListener('submit', saveUrls);
 $('#urlEditor').addEventListener('click', (e) => { if (e.target.id === 'urlEditor') closeUrlEditor(); });
 keyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') load(); });
-if (keyInput.value) load();
+if (keyInput.value) { load(); loadRelease(); }
 </script>
 </body>
 </html>`;

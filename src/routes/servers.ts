@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { sendError } from "../middleware";
 import { verifyFirebaseIdToken } from "../firebase";
+import { isUpdateRequired } from "../releases";
 import { getStore, isShardListable, reconcileOfflineShards, type ServerHistoryEntry, type ShardRecord } from "../store";
 
 // Public server discovery. Only active shards with a fresh heartbeat are
@@ -68,7 +69,13 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
 export function setupServerRoutes(app: Express) {
   app.get("/servers", async (req: Request, res: Response) => {
     try {
-      const shards = (await reconcileOfflineShards(await getStore().listShards())).filter((s) => isShardListable(s));
+      // Phase 12: shards below the mandatory release floor are hidden from
+      // discovery (player routing) until they update, alongside the usual
+      // offline/stale/disabled filtering.
+      const release = await getStore().getLatestRelease();
+      const shards = (await reconcileOfflineShards(await getStore().listShards())).filter(
+        (s) => isShardListable(s) && !isUpdateRequired(s.version, release)
+      );
 
       let history: PublicHistoryEntry[] = [];
       const uid = await uidFromOptionalAuth(req);
@@ -97,7 +104,10 @@ export function setupServerRoutes(app: Express) {
       const lon = Number(req.query.lon);
       const hasCoords = Number.isFinite(lat) && Number.isFinite(lon);
 
-      const listable = (await reconcileOfflineShards(await getStore().listShards())).filter((s) => isShardListable(s));
+      const release = await getStore().getLatestRelease();
+      const listable = (await reconcileOfflineShards(await getStore().listShards())).filter(
+        (s) => isShardListable(s) && !isUpdateRequired(s.version, release)
+      );
       if (listable.length === 0) {
         return sendError(res, 404, "NO_SERVERS", "No servers are currently online.");
       }

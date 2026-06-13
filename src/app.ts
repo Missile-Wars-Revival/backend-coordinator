@@ -4,6 +4,7 @@ import { sendError } from "./middleware";
 import { setupAdminRoutes } from "./routes/admin";
 import { setupAuthRoutes } from "./routes/auth";
 import { setupPurchaseRoutes } from "./routes/purchases";
+import { setupReleaseRoutes } from "./routes/releases";
 import { setupRelayRoutes } from "./routes/relay";
 import { setupServerRoutes } from "./routes/servers";
 import { setupShardRoutes } from "./routes/shards";
@@ -39,6 +40,7 @@ export function buildApp(): Express {
   setupServerRoutes(app);
   setupAuthRoutes(app);
   setupPurchaseRoutes(app);
+  setupReleaseRoutes(app);
   setupRelayRoutes(app);
   setupAdminRoutes(app);
 

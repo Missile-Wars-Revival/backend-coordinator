@@ -2,7 +2,8 @@ import { randomUUID, randomBytes } from "crypto";
 import type { Express, Request, Response } from "express";
 import { z } from "zod";
 import { getAuthedShard, sendError, shardAuth } from "../middleware";
-import { getStore, hashApiKey, type ShardRecord } from "../store";
+import { computeUpdateStatus } from "../releases";
+import { getStore, hashApiKey, type ShardRecord, type ShardUpdateStatus } from "../store";
 
 // Community-server endpoints. Open registration: anyone can register a shard,
 // but new shards start unverified (and "pending" until their first heartbeat).
@@ -24,6 +25,17 @@ const HeartbeatSchema = z.object({
   totalPlayerCount: z.number().int().min(0).optional(),
   version: z.string().max(40).optional(),
   gitSha: z.string().max(64).optional(),
+  // Phase 12: the shard's update agent reports its own state so the admin
+  // portal can surface stuck/broken hosts.
+  autoUpdate: z.boolean().optional(),
+  lastUpdateAttemptAt: z.number().int().min(0).optional(),
+  updateFailed: z
+    .object({
+      fromVersion: z.string().max(40).optional(),
+      toVersion: z.string().max(40).optional(),
+      reason: z.string().max(500).optional(),
+    })
+    .optional(),
 });
 
 const NameAvailabilitySchema = z.object({
@@ -113,20 +125,57 @@ export function setupShardRoutes(app: Express) {
         return sendError(res, 400, "INVALID_BODY", parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
       }
       const shard = getAuthedShard(req);
+      const store = getStore();
+      const reportedVersion = parsed.data.version ?? shard.version;
+
+      // Phase 12: decide what this shard should do about updates.
+      const release = await store.getLatestRelease();
+      let updateStatus: ShardUpdateStatus = computeUpdateStatus(shard.id, reportedVersion, release);
+      // A host that opted out (AUTO_UPDATE=false) but is below the mandatory
+      // floor is stuck — surface that distinctly so an admin can intervene.
+      if (updateStatus === "update_required" && parsed.data.autoUpdate === false) {
+        updateStatus = "blocked";
+      }
+
       const patch: Partial<ShardRecord> = {
         playerCount: parsed.data.playerCount,
         lastHeartbeatAt: Date.now(),
+        updateStatus,
         ...(parsed.data.totalPlayerCount !== undefined ? { totalPlayerCount: parsed.data.totalPlayerCount } : {}),
         ...(parsed.data.version ? { version: parsed.data.version } : {}),
         ...(parsed.data.gitSha ? { gitSha: parsed.data.gitSha } : {}),
+        ...(parsed.data.autoUpdate !== undefined ? { autoUpdate: parsed.data.autoUpdate } : {}),
+        ...(parsed.data.lastUpdateAttemptAt !== undefined ? { lastUpdateAttemptAt: parsed.data.lastUpdateAttemptAt } : {}),
+        ...(parsed.data.updateFailed
+          ? {
+              lastUpdateError: `${parsed.data.updateFailed.fromVersion ?? "?"} → ${parsed.data.updateFailed.toVersion ?? "?"}: ${parsed.data.updateFailed.reason ?? "unknown"}`,
+            }
+          : {}),
       };
       // First heartbeat activates a pending shard; a resumed heartbeat brings
       // an offline shard back into discovery.
       if (shard.status === "pending" || shard.status === "offline") {
         patch.status = "active";
       }
-      await getStore().updateShard(shard.id, patch);
-      res.json({ ok: true, data: { shardId: shard.id, status: patch.status ?? shard.status } });
+
+      // Deliver (and clear) any admin "update on next heartbeat" request. The
+      // shard treats updateRequested OR update_available as a cue to update.
+      const updateRequested = shard.updateRequested === true;
+      if (updateRequested) {
+        patch.updateRequested = false;
+      }
+
+      await store.updateShard(shard.id, patch);
+      res.json({
+        ok: true,
+        data: {
+          shardId: shard.id,
+          status: patch.status ?? shard.status,
+          updateStatus,
+          updateRequested,
+          release,
+        },
+      });
     } catch (error) {
       console.error("[shards/heartbeat]", error);
       sendError(res, 500, "INTERNAL", "Heartbeat failed.");

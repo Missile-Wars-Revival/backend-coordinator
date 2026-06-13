@@ -29,6 +29,36 @@ export interface ShardRecord {
   lastHeartbeatAt?: number;
   createdAt: number;
   updatedAt: number;
+  // Phase 12 shard auto-update. updateStatus is recomputed from version vs the
+  // latest release on each heartbeat and stored for admin visibility.
+  // updateRequested is an admin "update on next heartbeat" flag, cleared once
+  // the coordinator has told the shard. The lastUpdate* fields are reported
+  // BY the shard's update agent.
+  updateStatus?: ShardUpdateStatus;
+  updateRequested?: boolean;
+  autoUpdate?: boolean;
+  lastUpdateAttemptAt?: number;
+  lastUpdateError?: string;
+}
+
+export type ShardUpdateStatus = "current" | "update_available" | "update_required" | "blocked";
+
+// Phase 12: the latest approved backend release, stored under
+// /coordinator/releases/backend/latest. `version` is the source of truth
+// (`backend/package.json`); the rest gate and describe the rollout.
+export interface BackendRelease {
+  version: string;
+  gitSha?: string;
+  imageDigest?: string;
+  // Shards below this are hidden from discovery until they update (mandatory).
+  minimumSupportedVersion?: string;
+  // 0-100. Optional/gradual rollout for non-mandatory releases; a shard is in
+  // the rollout when a stable hash of its id falls under this percentage.
+  rolloutPercent?: number;
+  migrationRequired?: boolean;
+  // `critical` releases may update even while players are connected.
+  critical?: boolean;
+  publishedAt: number;
 }
 
 export interface SessionRecord {
@@ -69,6 +99,12 @@ export interface Store {
   // was already) owned by this uid, false when another uid holds it.
   claimUsername(usernameLower: string, userId: string): Promise<boolean>;
   getUsernameClaim(usernameLower: string): Promise<string | null>;
+  // Phase 12 release metadata + shard lifecycle.
+  getLatestRelease(): Promise<BackendRelease | null>;
+  setLatestRelease(release: BackendRelease): Promise<void>;
+  // Permanently removes a shard and all coordinator-owned metadata for it
+  // (record, key/name index, and serverHistory entries across all users).
+  deleteShard(shard: ShardRecord): Promise<void>;
   // Phase 9 payment migration: a one-redemption-per-purchase ledger keyed on
   // the RevenueCat/store transaction id. Returns "claimed" when this call won
   // the txId, "owned-self" when the same user already redeemed it onto the same
@@ -104,6 +140,7 @@ const SESSIONS = "coordinator/sessions";
 const USERS = "coordinator/users";
 const USERNAME_INDEX = "coordinator/usernameIndex";
 const PURCHASES = "coordinator/purchases";
+const RELEASE_LATEST = "coordinator/releases/backend/latest";
 
 // RevenueCat store transaction ids can contain "." (and other characters RTDB
 // forbids in keys), so they are not safe as raw RTDB keys. Hash to a stable
@@ -231,6 +268,44 @@ class RtdbStore implements Store {
     }
     return "owned-other";
   }
+
+  async getLatestRelease(): Promise<BackendRelease | null> {
+    const snap = await rtdb().ref(RELEASE_LATEST).get();
+    return snap.exists() ? (snap.val() as BackendRelease) : null;
+  }
+
+  async setLatestRelease(release: BackendRelease): Promise<void> {
+    await rtdb().ref(RELEASE_LATEST).set(release);
+  }
+
+  async deleteShard(shard: ShardRecord): Promise<void> {
+    // Remove the record, key index, and name index atomically.
+    await rtdb()
+      .ref()
+      .update({
+        [`${SHARDS}/${shard.id}`]: null,
+        [`${KEY_INDEX}/${shard.apiKeyHash}`]: null,
+        [`${NAME_INDEX}/${nameKey(shard.name)}`]: null,
+      });
+
+    // Sweep this shard out of every user's server history so it stops showing
+    // up in Continue/Recent as an unavailable entry. Best-effort: a failure
+    // here must not leave the shard record half-deleted (already gone above).
+    try {
+      const usersSnap = await rtdb().ref(USERS).get();
+      if (usersSnap.exists()) {
+        const updates: Record<string, null> = {};
+        for (const userId of Object.keys(usersSnap.val() as Record<string, unknown>)) {
+          updates[`${USERS}/${userId}/serverHistory/${shard.id}`] = null;
+        }
+        if (Object.keys(updates).length > 0) {
+          await rtdb().ref().update(updates);
+        }
+      }
+    } catch (error) {
+      console.error(`[store] serverHistory sweep failed for deleted shard ${shard.id}:`, (error as Error).message);
+    }
+  }
 }
 
 // RTDB keys cannot contain . $ # [ ] / — normalize shard names for the index.
@@ -248,6 +323,7 @@ class MemoryStore implements Store {
   private serverHistory = new Map<string, Map<string, ServerHistoryEntry>>();
   private usernameIndex = new Map<string, string>();
   private purchases = new Map<string, PurchaseRecord>();
+  private latestRelease: BackendRelease | null = null;
 
   async createShard(shard: ShardRecord): Promise<boolean> {
     const key = nameKey(shard.name);
@@ -331,6 +407,23 @@ class MemoryStore implements Store {
       return "owned-self";
     }
     return "owned-other";
+  }
+
+  async getLatestRelease(): Promise<BackendRelease | null> {
+    return this.latestRelease;
+  }
+
+  async setLatestRelease(release: BackendRelease): Promise<void> {
+    this.latestRelease = release;
+  }
+
+  async deleteShard(shard: ShardRecord): Promise<void> {
+    this.shards.delete(shard.id);
+    this.keyIndex.delete(shard.apiKeyHash);
+    this.nameIndex.delete(nameKey(shard.name));
+    for (const history of this.serverHistory.values()) {
+      history.delete(shard.id);
+    }
   }
 }
 
