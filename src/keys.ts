@@ -34,12 +34,20 @@ export interface ShardTokenClaims {
   firebaseUID?: string;
   username: string;
   shardId: string;
+  // Firebase-derived staff/debug flag (Staff or Debug identity badge). Stamped
+  // into the token so shards can authorize privileged ops without Firebase creds.
+  staff?: boolean;
 }
 
 export async function signShardToken(claims: ShardTokenClaims): Promise<{ token: string; expiresAt: number }> {
   const key = await getPrivateKey();
   const expiresAt = Date.now() + env.TOKEN_TTL_HOURS * 3600 * 1000;
-  const token = await new SignJWT({ username: claims.username, scope: "play:server" })
+  const token = await new SignJWT({
+    username: claims.username,
+    scope: "play:server",
+    // Only present when true, to keep tokens lean and default-deny.
+    ...(claims.staff ? { staff: true } : {}),
+  })
     .setProtectedHeader({ alg: ALG, kid: env.JWT_PUBLIC_KEY_ID })
     .setSubject(claims.firebaseUID || `user:${claims.username}`)
     .setAudience(claims.shardId)

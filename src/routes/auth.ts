@@ -7,6 +7,7 @@ import {
   bootstrapProfile,
   getProfileUsername,
   getUidByProfileUsername,
+  isStaffUid,
   setProfileUsername,
 } from "../social";
 import { getStore, isShardListable, type ShardRecord } from "../store";
@@ -78,7 +79,8 @@ export function setupAuthRoutes(app: Express) {
       const shard = getAuthedShard(req);
       const { username, firebaseUID } = parsed.data;
 
-      const { token, expiresAt } = await signShardToken({ username, firebaseUID, shardId: shard.id });
+      const staff = firebaseUID ? await isStaffUid(firebaseUID) : false;
+      const { token, expiresAt } = await signShardToken({ username, firebaseUID, shardId: shard.id, staff });
       const userId = firebaseUID ?? `user:${username}`;
       await getStore().addSession({
         userId,
@@ -156,10 +158,12 @@ export function setupAuthRoutes(app: Express) {
         return sendError(res, 403, "SHARD_DISABLED", "This server is no longer available.");
       }
 
+      const subUid = payload.sub.startsWith("user:") ? null : payload.sub;
       const { token: newToken, expiresAt } = await signShardToken({
         username,
-        firebaseUID: payload.sub.startsWith("user:") ? undefined : payload.sub,
+        firebaseUID: subUid ?? undefined,
         shardId,
+        staff: subUid ? await isStaffUid(subUid) : false,
       });
       await bootstrapProfile(payload.sub, username, shardId);
       await recordServerUse(payload.sub, shard);
@@ -262,6 +266,7 @@ export function setupAuthRoutes(app: Express) {
         firebaseUID: decoded.uid,
         username,
         shardId: shard.id,
+        staff: await isStaffUid(decoded.uid),
       });
 
       await store.addSession({

@@ -75,6 +75,12 @@ violate the coordinator/shard split.
   (`POST /auth/claim-username`, `GET /auth/username-available`).
 - `src/routes/relay.ts` - Expo push relay backed by Firebase central token and
   preference paths.
+- `src/routes/releases.ts` - Phase 12 `GET /releases/backend/latest`. The
+  per-shard update decision (current / update_available / update_required /
+  blocked) is computed in `src/releases.ts` (semver in `src/semver.ts`) and
+  returned in the shard heartbeat response alongside the release. Published by
+  an admin via `POST /admin/api/releases/backend`; admins can also
+  `POST /admin/api/shards/:id/request-update` and `.../delete`.
 - `src/routes/purchases.ts` - Phase 9 `POST /purchases/redeem` (auth: Firebase
   ID token). Verifies a RevenueCat purchase (`src/revenuecat.ts`), claims the
   store transaction once in the RTDB ledger (`store.claimPurchase`), and mints
@@ -107,6 +113,11 @@ Player session auth uses coordinator-issued RS256 JWTs:
 
 - `sub` is `firebaseUID`, or `user:<username>` for legacy non-Firebase accounts.
 - `username` is included as a claim for existing shard code.
+- `staff: true` is stamped when the user holds the Staff or Debug identity badge
+  (`isStaffUid` in `src/social.ts`), so shards can authorize privileged ops
+  (e.g. the debug menu's edit-any-user) without Firebase creds. Omitted (not
+  `false`) when not staff, so the shard default-denies. Reflects badge changes
+  on the next token mint/refresh (≤ token TTL).
 - `aud` is always the shard id.
 - `iss` is `COORDINATOR_PUBLIC_URL`.
 - Expiry defaults to 12 hours.
@@ -126,6 +137,11 @@ Coordinator control-plane state is under these RTDB paths:
   server history (`firstUsedAt`, `lastUsedAt`, `useCount` plus name/region/
   verified snapshots), written on every token mint; `userId` is the
   firebaseUID or `user:<username>` for legacy accounts
+- `/coordinator/releases/backend/latest` - Phase 12 latest approved backend
+  release (`version`, optional `gitSha`/`imageDigest`/`minimumSupportedVersion`/
+  `rolloutPercent`/`migrationRequired`/`critical`, `publishedAt`). Admin-SDK
+  only; shards read their update decision from the heartbeat response, not this
+  path directly.
 - `/coordinator/purchases/<sha256(txId)>` - Phase 9 purchase ledger. One
   record per redeemed RevenueCat/store transaction (`{txId, userId, shardId,
   productId, grant*, redeemedAt}`), written by `store.claimPurchase` so each

@@ -80,6 +80,15 @@ export async function getIdentityBadges(uid: string): Promise<string[]> {
   }
 }
 
+// Phase: staff/debug authorization is Firebase-authoritative. A user is "staff"
+// (gets debug-menu + privileged backend ops) if they hold the Staff or Debug
+// identity badge. The coordinator stamps this into the minted shard JWT so the
+// shard can authorize without Firebase creds of its own.
+export async function isStaffUid(uid: string): Promise<boolean> {
+  const badges = await getIdentityBadges(uid);
+  return badges.includes("Staff") || badges.includes("Debug");
+}
+
 // THROWS on failure: an admin grant/revoke must not silently succeed.
 export async function setIdentityBadge(uid: string, badge: IdentityBadge, granted: boolean): Promise<void> {
   if (!firebaseAvailable()) throw new Error("Firebase Admin credentials are not configured");
