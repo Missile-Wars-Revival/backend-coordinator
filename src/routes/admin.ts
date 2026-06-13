@@ -1,6 +1,13 @@
 import type { Express, Request, Response } from "express";
 import { z } from "zod";
 import { adminAuth, sendError } from "../middleware";
+import {
+  getIdentityBadges,
+  getUidByProfileUsername,
+  isKnownIdentityBadge,
+  KNOWN_IDENTITY_BADGES,
+  setIdentityBadge,
+} from "../social";
 import { getStore, hashApiKey, isShardListable, reconcileOfflineShards } from "../store";
 import { newShardApiKey } from "./shards";
 
@@ -51,7 +58,50 @@ export function setupAdminRoutes(app: Express) {
       sendError(res, 500, "INTERNAL", "Key rotation failed.");
     }
   });
+
+  // Phase 10: read a user's central identity badges (by game username).
+  app.get("/admin/api/identity-badges", adminAuth, async (req: Request, res: Response) => {
+    try {
+      const username = typeof req.query.username === "string" ? req.query.username.trim() : "";
+      if (!username) return sendError(res, 400, "INVALID_QUERY", "Provide ?username=.");
+      const uid = await getUidByProfileUsername(username);
+      if (!uid) return sendError(res, 404, "NO_PROFILE", `No central profile found for "${username}".`);
+      const badges = await getIdentityBadges(uid);
+      res.json({ ok: true, data: { username, uid, badges, known: KNOWN_IDENTITY_BADGES } });
+    } catch (error) {
+      console.error("[admin/identity-badges:get]", error);
+      sendError(res, 500, "INTERNAL", "Failed to read identity badges.");
+    }
+  });
+
+  // Grant or revoke a single identity badge for a user.
+  app.post("/admin/api/identity-badges", adminAuth, async (req: Request, res: Response) => {
+    try {
+      const parsed = IdentityBadgeSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return sendError(res, 400, "INVALID_BODY", parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
+      }
+      const { username, badge, granted } = parsed.data;
+      if (!isKnownIdentityBadge(badge)) {
+        return sendError(res, 400, "UNKNOWN_BADGE", `Unknown identity badge. Allowed: ${KNOWN_IDENTITY_BADGES.join(", ")}.`);
+      }
+      const uid = await getUidByProfileUsername(username);
+      if (!uid) return sendError(res, 404, "NO_PROFILE", `No central profile found for "${username}".`);
+
+      await setIdentityBadge(uid, badge, granted);
+      res.json({ ok: true, data: { username, uid, badges: await getIdentityBadges(uid) } });
+    } catch (error) {
+      console.error("[admin/identity-badges:post]", error);
+      sendError(res, 500, "INTERNAL", "Failed to update identity badge.");
+    }
+  });
 }
+
+const IdentityBadgeSchema = z.object({
+  username: z.string().min(1).max(64),
+  badge: z.string().min(1).max(40),
+  granted: z.boolean(),
+});
 
 const UrlUpdateSchema = z.object({
   publicHttpUrl: z.string().url().max(200).refine((url) => hasProtocol(url, ["http:", "https:"]), {
@@ -137,9 +187,9 @@ const PORTAL_HTML = /* html */ `<!doctype html>
   .pill.disabled { color: #f85149; border-color: #f85149; }
   .pill.verified { color: #58a6ff; border-color: #58a6ff; }
   .muted { color: #8b949e; font-size: .8rem; }
-  #msg { margin: .75rem 0; min-height: 1.2rem; font-size: .9rem; }
-  #msg.err { color: #f85149; }
-  #msg.ok { color: #3fb950; }
+  #msg, #badgeMsg { margin: .75rem 0; min-height: 1.2rem; font-size: .9rem; }
+  #msg.err, #badgeMsg.err { color: #f85149; }
+  #msg.ok, #badgeMsg.ok { color: #3fb950; }
   td .actions { display: flex; gap: .35rem; flex-wrap: wrap; }
   .modal-backdrop { position: fixed; inset: 0; display: grid; place-items: center; background: rgb(1 4 9 / .76); padding: 1rem; }
   .modal-backdrop[hidden] { display: none !important; }
@@ -180,6 +230,14 @@ const PORTAL_HTML = /* html */ `<!doctype html>
     </div>
   </form>
 </div>
+<h1 style="font-size:1.05rem;margin-top:2.25rem;">Identity badges</h1>
+<div class="muted" style="margin-bottom:.6rem;">Account-level badges (staff / early access / founder / debug). Stored centrally in Firebase so they follow the player across shards. League badges stay per-shard and are not managed here.</div>
+<div class="bar">
+  <input id="badgeUser" placeholder="Game username">
+  <button id="badgeLoad">Load badges</button>
+</div>
+<div id="badgeMsg"></div>
+<div id="badgePanel" hidden><div id="badgeRow" class="actions"></div></div>
 <script>
 const $ = (s) => document.querySelector(s);
 const keyInput = $('#key');
@@ -297,6 +355,43 @@ async function saveUrls(e) {
   } catch (e) { msg(e.message, 'err'); }
 }
 
+let knownBadges = [];
+function badgeMsg(text, cls) { const el = $('#badgeMsg'); el.textContent = text; el.className = cls || ''; }
+
+async function loadBadges() {
+  const username = $('#badgeUser').value.trim();
+  if (!username) return badgeMsg('Enter a username.', 'err');
+  badgeMsg('Loading…');
+  try {
+    const data = await api('/admin/api/identity-badges?username=' + encodeURIComponent(username));
+    knownBadges = data.known;
+    renderBadges(data.username, data.badges);
+  } catch (e) { $('#badgePanel').hidden = true; badgeMsg(e.message, 'err'); }
+}
+
+function renderBadges(username, badges) {
+  const have = new Set(badges);
+  const row = $('#badgeRow');
+  row.innerHTML = '';
+  for (const b of knownBadges) {
+    const on = have.has(b);
+    const button = btn((on ? '✓ ' : '+ ') + b, () => setBadge(username, b, !on));
+    if (on) button.classList.add('primary');
+    row.append(button);
+  }
+  $('#badgePanel').hidden = false;
+  badgeMsg(esc(username) + ' · ' + (badges.length ? badges.join(', ') : 'no identity badges'), 'ok');
+}
+
+async function setBadge(username, badge, granted) {
+  try {
+    const data = await api('/admin/api/identity-badges', { method: 'POST', body: JSON.stringify({ username, badge, granted }) });
+    renderBadges(data.username, data.badges);
+  } catch (e) { badgeMsg(e.message, 'err'); }
+}
+
+$('#badgeLoad').onclick = loadBadges;
+$('#badgeUser').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadBadges(); });
 $('#load').onclick = load;
 $('#cancelUrlEdit').onclick = closeUrlEditor;
 $('#urlForm').addEventListener('submit', saveUrls);

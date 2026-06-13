@@ -82,6 +82,10 @@ violate the coordinator/shard split.
   the shard redeems. `src/catalog.ts` is the server-authoritative product →
   grant map; the client never names an amount.
 - `src/routes/admin.ts` - admin API and self-contained `/admin` HTML page.
+  Includes Phase 10 identity-badge management (`GET`/`POST
+  /admin/api/identity-badges`): grant/revoke account-level badges (staff /
+  early-access / founder / debug) stored in central Firebase. League/gameplay
+  badges are NOT managed here — they stay in each shard's Postgres.
 - `rtdbrules.json` - Firebase RTDB rules for coordinator and global social data.
 
 ## Auth and trust model
@@ -138,7 +142,9 @@ Clients must not read or write `/coordinator/*` directly. Keep
 
 Global social paths currently planned/used by the distributed design:
 
-- `/profiles/<uid>`
+- `/profiles/<uid>` (Phase 10: also holds `identityBadges/<Badge> = true` — a
+  set of account-level badges written admin-SDK-only via the admin portal,
+  client-readable like the rest of the profile)
 - `/friends/<uid>`
 - `/friendRequests/<uid>/<fromUid>`
 - `/notificationPreferences/<uid>`

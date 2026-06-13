@@ -50,6 +50,42 @@ export async function setProfileUsername(uid: string, username: string): Promise
   await rtdb().ref(`profiles/${uid}`).update({ username, updatedAt: Date.now() });
 }
 
+// Phase 10: identity badges (staff / early-access / founder / debug) are
+// account-level, not gameplay achievements, so they live in central Firebase
+// and follow the player across shards — unlike league badges, which stay in
+// each shard's Postgres `Statistics.badges`. Stored as a set under
+// /profiles/<uid>/identityBadges/<Badge> = true so grant/revoke is atomic per
+// badge and clients read it with their existing /profiles read access
+// (writes are admin-SDK-only per rtdbrules.json). Assigned via the admin
+// portal; the known set is fixed so the app always has matching artwork.
+export const KNOWN_IDENTITY_BADGES = ["Founder", "Staff", "Early", "Debug"] as const;
+export type IdentityBadge = (typeof KNOWN_IDENTITY_BADGES)[number];
+
+export function isKnownIdentityBadge(badge: string): badge is IdentityBadge {
+  return (KNOWN_IDENTITY_BADGES as readonly string[]).includes(badge);
+}
+
+export async function getIdentityBadges(uid: string): Promise<string[]> {
+  if (!firebaseAvailable()) return [];
+  try {
+    const snap = await rtdb().ref(`profiles/${uid}/identityBadges`).get();
+    if (!snap.exists()) return [];
+    const val = snap.val() as Record<string, unknown>;
+    return Object.entries(val)
+      .filter(([, granted]) => granted === true)
+      .map(([badge]) => badge);
+  } catch (error) {
+    console.error(`[social] identity-badge read failed for ${uid}:`, (error as Error).message);
+    return [];
+  }
+}
+
+// THROWS on failure: an admin grant/revoke must not silently succeed.
+export async function setIdentityBadge(uid: string, badge: IdentityBadge, granted: boolean): Promise<void> {
+  if (!firebaseAvailable()) throw new Error("Firebase Admin credentials are not configured");
+  await rtdb().ref(`profiles/${uid}/identityBadges/${badge}`).set(granted ? true : null);
+}
+
 export async function bootstrapProfile(uid: string, username: string, shardId: string): Promise<void> {
   if (!firebaseAvailable()) return;
   try {
