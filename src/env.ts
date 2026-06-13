@@ -21,6 +21,14 @@ const EnvSchema = z.object({
   // Gate for /admin and /admin/api/*.
   ADMIN_API_KEY: z.string().optional(),
 
+  // Phase 9 payment migration: the coordinator is the ONLY holder of the
+  // RevenueCat *secret* key (sk_...). It verifies purchases server-side before
+  // minting a grant voucher. Per the one security law, this never reaches a
+  // shard. Unset → premium redemption is disabled (solo/no-coordinator hosts
+  // keep their client-side coin shop only).
+  REVENUECAT_SECRET_KEY: z.string().optional(),
+  REVENUECAT_API_BASE: z.string().url().default("https://api.revenuecat.com"),
+
   // Firebase Admin credentials (service-account fields). When unset, the
   // coordinator falls back to an in-memory store for local development.
   FIREBASE_PROJECT_ID: z.string().optional(),
@@ -62,4 +70,17 @@ export function requirePrivateKeyPem(): string {
 
 export function hasFirebaseCredentials(): boolean {
   return Boolean(env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY);
+}
+
+export function requireRevenueCatKey(): string {
+  if (!env.REVENUECAT_SECRET_KEY) {
+    throw new Error(
+      "REVENUECAT_SECRET_KEY is not set — set the RevenueCat secret (sk_...) key in the coordinator environment to verify purchases."
+    );
+  }
+  return env.REVENUECAT_SECRET_KEY;
+}
+
+export function hasRevenueCatKey(): boolean {
+  return Boolean(env.REVENUECAT_SECRET_KEY);
 }

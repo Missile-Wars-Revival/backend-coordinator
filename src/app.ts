@@ -3,6 +3,7 @@ import { getJwks } from "./keys";
 import { sendError } from "./middleware";
 import { setupAdminRoutes } from "./routes/admin";
 import { setupAuthRoutes } from "./routes/auth";
+import { setupPurchaseRoutes } from "./routes/purchases";
 import { setupRelayRoutes } from "./routes/relay";
 import { setupServerRoutes } from "./routes/servers";
 import { setupShardRoutes } from "./routes/shards";
@@ -37,6 +38,7 @@ export function buildApp(): Express {
   setupShardRoutes(app);
   setupServerRoutes(app);
   setupAuthRoutes(app);
+  setupPurchaseRoutes(app);
   setupRelayRoutes(app);
   setupAdminRoutes(app);
 

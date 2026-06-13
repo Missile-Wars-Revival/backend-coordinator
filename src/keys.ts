@@ -50,6 +50,42 @@ export async function signShardToken(claims: ShardTokenClaims): Promise<{ token:
   return { token, expiresAt };
 }
 
+// Phase 9: a purchase grant voucher. Signed with the SAME RS256 private key as
+// shard tokens, so shards verify it with the JWKS they already cache — no new
+// secret reaches a shard. A distinct `scope` keeps it from being mistaken for a
+// play token, and the short expiry bounds replay (the shard also dedupes on
+// txId). `aud` locks the grant to one shard (one world); `sub` is the buyer.
+export interface PurchaseVoucherClaims {
+  firebaseUID: string;
+  shardId: string;
+  txId: string;
+  productId: string;
+  grant: Record<string, unknown>;
+}
+
+const VOUCHER_TTL_SECONDS = 10 * 60;
+
+export async function signPurchaseVoucher(
+  claims: PurchaseVoucherClaims
+): Promise<{ voucher: string; expiresAt: number }> {
+  const key = await getPrivateKey();
+  const expiresAt = Date.now() + VOUCHER_TTL_SECONDS * 1000;
+  const voucher = await new SignJWT({
+    scope: "purchase:grant",
+    txId: claims.txId,
+    productId: claims.productId,
+    grant: claims.grant,
+  })
+    .setProtectedHeader({ alg: ALG, kid: env.JWT_PUBLIC_KEY_ID })
+    .setSubject(claims.firebaseUID)
+    .setAudience(claims.shardId)
+    .setIssuer(env.COORDINATOR_PUBLIC_URL)
+    .setIssuedAt()
+    .setExpirationTime(Math.floor(expiresAt / 1000))
+    .sign(key);
+  return { voucher, expiresAt };
+}
+
 let publicKeyObject: KeyObject | null = null;
 
 // Verifies one of our own shard tokens (signature, expiry, issuer). Used by

@@ -43,6 +43,10 @@ All config is parsed in `src/env.ts`. Required-for-production values:
 - `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`,
   `FIREBASE_DATABASE_URL` - Firebase Admin and RTDB.
 - `STALE_HEARTBEAT_SECONDS` - discovery freshness cutoff, defaults to 120.
+- `REVENUECAT_SECRET_KEY` - Phase 9. RevenueCat secret (`sk_...`) key, the only
+  copy in any repo. Verifies purchases server-side in `/purchases/redeem`.
+  Unset → redemption returns `PURCHASES_DISABLED`. `REVENUECAT_API_BASE`
+  defaults to `https://api.revenuecat.com`.
 
 Firebase credentials are lazy: `/health` and local development can run without
 them. Without Firebase credentials, `src/store.ts` uses an in-memory store. That
@@ -71,6 +75,12 @@ violate the coordinator/shard split.
   (`POST /auth/claim-username`, `GET /auth/username-available`).
 - `src/routes/relay.ts` - Expo push relay backed by Firebase central token and
   preference paths.
+- `src/routes/purchases.ts` - Phase 9 `POST /purchases/redeem` (auth: Firebase
+  ID token). Verifies a RevenueCat purchase (`src/revenuecat.ts`), claims the
+  store transaction once in the RTDB ledger (`store.claimPurchase`), and mints
+  a short-lived RS256 grant voucher (`signPurchaseVoucher` in `src/keys.ts`)
+  the shard redeems. `src/catalog.ts` is the server-authoritative product →
+  grant map; the client never names an amount.
 - `src/routes/admin.ts` - admin API and self-contained `/admin` HTML page.
 - `rtdbrules.json` - Firebase RTDB rules for coordinator and global social data.
 
@@ -112,6 +122,11 @@ Coordinator control-plane state is under these RTDB paths:
   server history (`firstUsedAt`, `lastUsedAt`, `useCount` plus name/region/
   verified snapshots), written on every token mint; `userId` is the
   firebaseUID or `user:<username>` for legacy accounts
+- `/coordinator/purchases/<sha256(txId)>` - Phase 9 purchase ledger. One
+  record per redeemed RevenueCat/store transaction (`{txId, userId, shardId,
+  productId, grant*, redeemedAt}`), written by `store.claimPurchase` so each
+  purchase is granted exactly once. The key is hashed because store transaction
+  ids contain RTDB-illegal characters. Admin-SDK only (under `/coordinator`).
 - `/coordinator/usernameIndex/<usernameLower>` - Phase 8 global username
   claims (lowercased name -> firebaseUID), written transactionally by
   `POST /auth/claim-username`. Availability checks also consult `/profiles`

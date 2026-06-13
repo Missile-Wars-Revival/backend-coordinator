@@ -69,6 +69,26 @@ export interface Store {
   // was already) owned by this uid, false when another uid holds it.
   claimUsername(usernameLower: string, userId: string): Promise<boolean>;
   getUsernameClaim(usernameLower: string): Promise<string | null>;
+  // Phase 9 payment migration: a one-redemption-per-purchase ledger keyed on
+  // the RevenueCat/store transaction id. Returns "claimed" when this call won
+  // the txId, "owned-self" when the same user already redeemed it onto the same
+  // shard (idempotent voucher re-mint after a failed shard credit), and
+  // "owned-other" when it was redeemed onto a different shard (shards are
+  // separate worlds — a purchase is spent in exactly one).
+  claimPurchase(txId: string, record: PurchaseRecord): Promise<PurchaseClaimResult>;
+}
+
+export type PurchaseClaimResult = "claimed" | "owned-self" | "owned-other";
+
+export interface PurchaseRecord {
+  txId: string;
+  userId: string;
+  shardId: string;
+  productId: string;
+  grantKind: string;
+  grantAmount?: number;
+  grantItem?: string;
+  redeemedAt: number;
 }
 
 export function hashApiKey(apiKey: string): string {
@@ -83,6 +103,14 @@ const NAME_INDEX = "coordinator/shardNameIndex";
 const SESSIONS = "coordinator/sessions";
 const USERS = "coordinator/users";
 const USERNAME_INDEX = "coordinator/usernameIndex";
+const PURCHASES = "coordinator/purchases";
+
+// RevenueCat store transaction ids can contain "." (and other characters RTDB
+// forbids in keys), so they are not safe as raw RTDB keys. Hash to a stable
+// fixed-length key. Collisions are cryptographically negligible.
+function purchaseKey(txId: string): string {
+  return createHash("sha256").update(txId).digest("hex");
+}
 
 // userId is a firebaseUID or "user:<username>" for legacy accounts; the colon
 // is a legal RTDB key character, so both forms can be used as-is.
@@ -188,6 +216,21 @@ class RtdbStore implements Store {
     const snap = await rtdb().ref(`${USERNAME_INDEX}/${usernameLower}`).get();
     return snap.exists() ? (snap.val() as string) : null;
   }
+
+  async claimPurchase(txId: string, record: PurchaseRecord): Promise<PurchaseClaimResult> {
+    const result = await rtdb()
+      .ref(`${PURCHASES}/${purchaseKey(txId)}`)
+      // Returning undefined aborts the transaction (keeps the existing value);
+      // returning the record claims an unredeemed txId.
+      .transaction((current: PurchaseRecord | null) => (current === null ? record : undefined));
+
+    if (result.committed) return "claimed";
+    const current = result.snapshot.val() as PurchaseRecord | null;
+    if (current && current.shardId === record.shardId && current.userId === record.userId) {
+      return "owned-self";
+    }
+    return "owned-other";
+  }
 }
 
 // RTDB keys cannot contain . $ # [ ] / — normalize shard names for the index.
@@ -204,6 +247,7 @@ class MemoryStore implements Store {
   private sessions: SessionRecord[] = [];
   private serverHistory = new Map<string, Map<string, ServerHistoryEntry>>();
   private usernameIndex = new Map<string, string>();
+  private purchases = new Map<string, PurchaseRecord>();
 
   async createShard(shard: ShardRecord): Promise<boolean> {
     const key = nameKey(shard.name);
@@ -275,6 +319,18 @@ class MemoryStore implements Store {
 
   async getUsernameClaim(usernameLower: string): Promise<string | null> {
     return this.usernameIndex.get(usernameLower) ?? null;
+  }
+
+  async claimPurchase(txId: string, record: PurchaseRecord): Promise<PurchaseClaimResult> {
+    const current = this.purchases.get(txId);
+    if (!current) {
+      this.purchases.set(txId, record);
+      return "claimed";
+    }
+    if (current.shardId === record.shardId && current.userId === record.userId) {
+      return "owned-self";
+    }
+    return "owned-other";
   }
 }
 
